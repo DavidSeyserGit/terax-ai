@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use russh::client::{self, Handle, Handler};
+use russh::client::{self, AuthResult, Handle, Handler};
+use russh::keys::agent::client::AgentClient;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -108,62 +109,129 @@ pub fn parse_target(target: &str, default_user: &str) -> (String, String, u16) {
     (user, host, port)
 }
 
-/// Tries to authenticate using common key paths under ~/.ssh. Mirrors the
-/// keys the system `ssh` client tries by default. Encrypted keys are skipped
-/// silently — we surface the final aggregate error if everything fails.
+/// Authenticates against the server using whatever credentials are reachable
+/// without prompting the user:
+///   1. ssh-agent (via `$SSH_AUTH_SOCK`) — covers encrypted keys the user has
+///      already unlocked with `ssh-add`, the common case on macOS/Linux.
+///   2. Unencrypted private keys at the standard `~/.ssh/id_*` paths.
+///
+/// Returns a hint-rich error if everything fails; passwords and passphrase
+/// prompts are out of scope for this iteration.
 pub async fn authenticate(
     handle: &mut Handle<SkipHostKey>,
     user: &str,
 ) -> Result<(), String> {
-    let home = dirs::home_dir().ok_or_else(|| "home dir not available".to_string())?;
-    let ssh_dir = home.join(".ssh");
-
-    // Order mirrors OpenSSH's IdentityFile defaults.
-    let candidates = [
-        "id_ed25519",
-        "id_ed25519_sk",
-        "id_ecdsa",
-        "id_ecdsa_sk",
-        "id_rsa",
-        "id_dsa",
-    ];
-
     let mut errors: Vec<String> = Vec::new();
-    for name in candidates {
-        let path = ssh_dir.join(name);
-        if !path.exists() {
-            continue;
-        }
-        match try_key(handle, user, &path).await {
-            Ok(true) => return Ok(()),
-            Ok(false) => errors.push(format!("{} rejected", path.display())),
-            Err(e) => errors.push(format!("{}: {e}", path.display())),
+    let mut tried_anything = false;
+
+    // ── 1. ssh-agent ────────────────────────────────────────────────────
+    match try_agent(handle, user).await {
+        Ok(true) => return Ok(()),
+        Ok(false) => {} // agent reachable but no identity worked
+        Err(e) => errors.push(format!("agent: {e}")),
+    }
+
+    // ── 2. unencrypted disk keys ────────────────────────────────────────
+    if let Some(home) = dirs::home_dir() {
+        let ssh_dir = home.join(".ssh");
+        let candidates = [
+            "id_ed25519",
+            "id_ed25519_sk",
+            "id_ecdsa",
+            "id_ecdsa_sk",
+            "id_rsa",
+            "id_dsa",
+        ];
+        for name in candidates {
+            let path = ssh_dir.join(name);
+            if !path.exists() {
+                continue;
+            }
+            tried_anything = true;
+            match try_disk_key(handle, user, &path).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => errors.push(format!("{} rejected", path.display())),
+                Err(KeyError::Encrypted) => errors.push(format!(
+                    "{} is encrypted (run `ssh-add {}` to unlock it)",
+                    path.display(),
+                    path.display()
+                )),
+                Err(KeyError::Other(e)) => errors.push(format!("{}: {e}", path.display())),
+            }
         }
     }
 
-    if errors.is_empty() {
-        Err("no SSH keys found under ~/.ssh".to_string())
-    } else {
-        Err(format!("authentication failed: {}", errors.join("; ")))
+    if !tried_anything && errors.iter().all(|e| e.starts_with("agent: ")) {
+        return Err(
+            "no usable SSH credentials. Start ssh-agent and `ssh-add` your key, \
+             or place an unencrypted key under `~/.ssh/`."
+                .into(),
+        );
     }
+    Err(format!("authentication failed: {}", errors.join("; ")))
 }
 
-async fn try_key(
-    handle: &mut Handle<SkipHostKey>,
-    user: &str,
-    path: &Path,
-) -> Result<bool, String> {
-    let key = load_secret_key(path, None).map_err(|e| e.to_string())?;
+async fn try_agent(handle: &mut Handle<SkipHostKey>, user: &str) -> Result<bool, String> {
+    let mut agent = AgentClient::connect_env().await.map_err(|e| e.to_string())?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|e| e.to_string())?;
+    if identities.is_empty() {
+        return Ok(false);
+    }
     let hash = handle
         .best_supported_rsa_hash()
         .await
         .map_err(|e| e.to_string())?
         .flatten();
+    for identity in identities {
+        let pubkey = identity.public_key().into_owned();
+        let result = handle
+            .authenticate_publickey_with(user, pubkey, hash, &mut agent)
+            .await
+            .map_err(|e| e.to_string())?;
+        if matches!(result, AuthResult::Success) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+enum KeyError {
+    /// Key file is OpenSSH/PEM-encrypted; we don't have the passphrase.
+    Encrypted,
+    Other(String),
+}
+
+async fn try_disk_key(
+    handle: &mut Handle<SkipHostKey>,
+    user: &str,
+    path: &Path,
+) -> Result<bool, KeyError> {
+    let key = match load_secret_key(path, None) {
+        Ok(k) => k,
+        Err(e) => {
+            // russh wraps the underlying ssh_key error; surface "encrypted"
+            // distinctly so the UI can recommend ssh-add instead of dumping
+            // a generic parse error on the user.
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("encrypted") || msg.contains("passphrase") {
+                return Err(KeyError::Encrypted);
+            }
+            return Err(KeyError::Other(e.to_string()));
+        }
+    };
+    let hash = handle
+        .best_supported_rsa_hash()
+        .await
+        .map_err(|e| KeyError::Other(e.to_string()))?
+        .flatten();
     let result = handle
         .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(result.success())
+        .map_err(|e| KeyError::Other(e.to_string()))?;
+    Ok(matches!(result, AuthResult::Success))
 }
 
 pub async fn connect(target: &str) -> Result<(SshSession, u16), String> {

@@ -180,17 +180,34 @@ export function FileExplorer({
                 strokeWidth={1.5}
                 className="text-destructive"
               />
-              <div className="text-xs text-destructive break-all">
+              <div className="text-[11px] leading-snug text-destructive break-words max-w-[18rem]">
                 {ssh.error ?? "SSH connection failed"}
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 text-[11px]"
-                onClick={() => useSshStore.getState().clear(ssh.tabId)}
-              >
-                Dismiss
-              </Button>
+              <div className="text-[10px] leading-snug text-muted-foreground max-w-[18rem]">
+                Your terminal SSH session is unaffected. The sidebar uses a
+                separate SFTP connection — only ssh-agent and unencrypted keys
+                are supported here for now.
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[11px]"
+                  onClick={() =>
+                    void useSshStore.getState().beginConnect(ssh.tabId, ssh.target)
+                  }
+                >
+                  Retry
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[11px]"
+                  onClick={() => useSshStore.getState().clear(ssh.tabId)}
+                >
+                  Dismiss
+                </Button>
+              </div>
             </>
           )}
         </div>
