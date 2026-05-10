@@ -5,6 +5,10 @@ export type TerminalTab = {
   kind: "terminal";
   title: string;
   cwd?: string;
+  /** When set, the terminal pane auto-runs `ssh <target>` after the shell
+   *  starts. The matching password (if any) is held in pendingPasswords.ts
+   *  so it never lands in React state. */
+  pendingSshTarget?: string;
 };
 
 export type EditorTab = {
@@ -85,6 +89,31 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setTabs((t) => [...t, { id, kind: "terminal", title: "shell", cwd }]);
     setActiveId(id);
     return id;
+  }, []);
+
+  const newSshTab = useCallback((target: string) => {
+    const id = nextIdRef.current++;
+    setTabs((t) => [
+      ...t,
+      {
+        id,
+        kind: "terminal",
+        title: target,
+        pendingSshTarget: target,
+      },
+    ]);
+    setActiveId(id);
+    return id;
+  }, []);
+
+  const clearPendingSshTarget = useCallback((id: number) => {
+    setTabs((t) =>
+      t.map((x) =>
+        x.id === id && x.kind === "terminal" && x.pendingSshTarget !== undefined
+          ? { ...x, pendingSshTarget: undefined }
+          : x,
+      ),
+    );
   }, []);
 
   const openFileTab = useCallback(
@@ -244,6 +273,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     activeId,
     setActiveId,
     newTab,
+    newSshTab,
+    clearPendingSshTarget,
     openFileTab,
     newPreviewTab,
     openAiDiffTab,

@@ -29,6 +29,7 @@ type Props = {
   onNew: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
+  onNewSsh: () => void;
   onClose: (id: number) => void;
   compact?: boolean;
 };
@@ -40,6 +41,7 @@ export function TabBar({
   onNew,
   onNewPreview,
   onNewEditor,
+  onNewSsh,
   onClose,
   compact,
 }: Props) {
@@ -159,6 +161,11 @@ export function TabBar({
               <HugeiconsIcon icon={Globe02Icon} size={14} strokeWidth={1.75} />
               <span className="flex-1">Preview</span>
               <span className="text-xs text-muted-foreground">⌘P</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onNewSsh()}>
+              <HugeiconsIcon icon={Globe02Icon} size={14} strokeWidth={1.75} />
+              <span className="flex-1">SSH</span>
+              <span className="text-xs text-muted-foreground">⌘⇧S</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

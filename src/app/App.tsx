@@ -31,7 +31,12 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { PreviewStack, type PreviewPaneHandle } from "@/modules/preview";
-import { useSshStore, useTabSshSession } from "@/modules/ssh";
+import {
+  setPendingSshPassword,
+  SshConnectDialog,
+  useSshStore,
+  useTabSshSession,
+} from "@/modules/ssh";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
@@ -67,6 +72,8 @@ export default function App() {
     activeId,
     setActiveId,
     newTab,
+    newSshTab,
+    clearPendingSshTarget,
     openFileTab,
     newPreviewTab,
     openAiDiffTab,
@@ -106,6 +113,7 @@ export default function App() {
 
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [newEditorOpen, setNewEditorOpen] = useState(false);
+  const [sshDialogOpen, setSshDialogOpen] = useState(false);
   const miniOpen = useChatStore((s) => s.mini.open);
   const openMini = useChatStore((s) => s.openMini);
   const focusInput = useChatStore((s) => s.focusInput);
@@ -425,6 +433,20 @@ export default function App() {
     [],
   );
 
+  // +SSH dialog: create a terminal tab targeting the host, queue the password
+  // for the PTY autologin, and kick off the parallel SFTP session with the
+  // same credentials so the sidebar lights up alongside the shell.
+  const handleSshConnect = useCallback(
+    (target: string, password: string | null) => {
+      const id = newSshTab(target);
+      if (password) setPendingSshPassword(id, password);
+      void useSshStore
+        .getState()
+        .beginConnect(id, target, password ?? undefined);
+    },
+    [newSshTab],
+  );
+
   const handlePathRenamed = useCallback(
     (from: string, to: string) => {
       for (const t of tabs) {
@@ -603,6 +625,7 @@ export default function App() {
             onNew={openNewTab}
             onNewPreview={() => openPreviewTab("")}
             onNewEditor={() => setNewEditorOpen(true)}
+            onNewSsh={() => setSshDialogOpen(true)}
             onClose={handleClose}
             onToggleSidebar={toggleSidebar}
             onOpenShortcuts={() => setShortcutsOpen(true)}
@@ -656,6 +679,7 @@ export default function App() {
                         onSearchReady={handleSearchReady}
                         onCwd={handleTerminalCwd}
                         onDetectedLocalUrl={handleDetectedLocalUrl}
+                        onSshAutologinDone={clearPendingSshTarget}
                       />
                     </div>
                     <div
@@ -772,6 +796,12 @@ export default function App() {
             onOpenChange={setNewEditorOpen}
             rootPath={explorerRoot ?? home}
             onCreated={(path) => openFileTab(path)}
+          />
+
+          <SshConnectDialog
+            open={sshDialogOpen}
+            onOpenChange={setSshDialogOpen}
+            onConnect={handleSshConnect}
           />
 
           <UpdaterDialog />

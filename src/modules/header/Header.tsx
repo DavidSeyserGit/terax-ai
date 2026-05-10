@@ -23,6 +23,7 @@ type Props = {
   onNew: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
+  onNewSsh: () => void;
   onClose: (id: number) => void;
   onToggleSidebar: () => void;
   onOpenShortcuts: () => void;
@@ -40,6 +41,7 @@ export function Header({
   onNew,
   onNewPreview,
   onNewEditor,
+  onNewSsh,
   onClose,
   onToggleSidebar,
   onOpenShortcuts,
@@ -122,6 +124,7 @@ export function Header({
           onNew={onNew}
           onNewPreview={onNewPreview}
           onNewEditor={onNewEditor}
+          onNewSsh={onNewSsh}
           onClose={onClose}
           compact={compact}
         />

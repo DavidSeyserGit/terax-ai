@@ -26,6 +26,16 @@ type Options = {
    *  data is forwarded to the PTY so consumers can sniff for shell-level
    *  events (e.g. `ssh user@host`) without racing the remote echo. */
   onUserInput?: (chunk: string) => void;
+  /** Auto-runs `ssh <target>` once the PTY is ready and answers the standard
+   *  OpenSSH host-key + password prompts using the queued credentials. The
+   *  callback is invoked once the password has been injected (or skipped)
+   *  so the host can clear its pending state. */
+  autoSshLogin?: {
+    target: string;
+    /** Pulled lazily so the password never sits in long-lived JS state. */
+    consumePassword: () => string | undefined;
+    onLoginCompleted?: () => void;
+  };
 };
 
 // Matches dev-server-style local URLs (vite, next dev, webpack, …). Anchors
@@ -42,6 +52,7 @@ export function useTerminalSession({
   onCwd,
   onDetectedLocalUrl,
   onUserInput,
+  autoSshLogin,
 }: Options) {
   const detectedRef = useRef<string | null>(null);
   const onDetectedRef = useRef(onDetectedLocalUrl);
@@ -49,6 +60,10 @@ export function useTerminalSession({
   const onExitRef = useRef(onExit);
   const onSearchReadyRef = useRef(onSearchReady);
   const onUserInputRef = useRef(onUserInput);
+  // autoSshLogin is captured *once* on mount — re-issuing the ssh command on
+  // every prop change would loop the login. The host clears its pending state
+  // via onLoginCompleted before we'd ever rebind anyway.
+  const autoSshLoginRef = useRef<Options["autoSshLogin"] | null>(autoSshLogin);
   useEffect(() => {
     onDetectedRef.current = onDetectedLocalUrl;
     onCwdRef.current = onCwd;
@@ -115,6 +130,16 @@ export function useTerminalSession({
       // Per-session decoder so interleaved chunks across tabs don't splice
       // a multi-byte UTF-8 codepoint between unrelated streams.
       const urlDecoder = new TextDecoder("utf-8", { fatal: false });
+      // Separate decoder for the autologin sniffer so its `stream: true` state
+      // doesn't interfere with URL detection.
+      const sshSniffDecoder = new TextDecoder("utf-8", { fatal: false });
+      // Rolling tail of recently decoded output. Match patterns against this
+      // so a prompt split across chunks (`pass` + `word: `) still triggers.
+      const SSH_SNIFF_TAIL_MAX = 256;
+      let sshSniffTail = "";
+      let hostKeyAnswered = false;
+      let passwordSent = false;
+      let autologinCompleted = false;
 
       const pty = await openPty(
         term.cols,
@@ -133,6 +158,38 @@ export function useTerminalSession({
                 if (url && url !== detectedRef.current) {
                   detectedRef.current = url;
                   onDetectedRef.current(url);
+                }
+              }
+            }
+            // Auto-login: watch for the OpenSSH client's interactive prompts
+            // and answer them on the user's behalf. Stops sniffing once the
+            // password has been delivered (or there was nothing to deliver).
+            const auto = autoSshLoginRef.current;
+            if (auto && !autologinCompleted) {
+              const text = sshSniffDecoder.decode(bytes, { stream: true });
+              if (text) {
+                sshSniffTail = (sshSniffTail + text).slice(-SSH_SNIFF_TAIL_MAX);
+                if (
+                  !hostKeyAnswered &&
+                  /\(yes\/no(?:\/\[fingerprint\])?\)\?\s*$/i.test(sshSniffTail)
+                ) {
+                  hostKeyAnswered = true;
+                  void ptyRef.current?.write("yes\n");
+                  sshSniffTail = "";
+                } else if (
+                  !passwordSent &&
+                  /password:\s*$/i.test(sshSniffTail)
+                ) {
+                  const pw = auto.consumePassword();
+                  passwordSent = true;
+                  if (pw !== undefined) void ptyRef.current?.write(`${pw}\n`);
+                  sshSniffTail = "";
+                  // Either way, login attempt is done from our perspective —
+                  // further prompts (wrong password, stacked auth) are on the
+                  // user. Clear the autologin so the next sniff stops early.
+                  autologinCompleted = true;
+                  auto.onLoginCompleted?.();
+                  autoSshLoginRef.current = null;
                 }
               }
             }
@@ -156,6 +213,22 @@ export function useTerminalSession({
         onUserInputRef.current?.(data);
         pty.write(data);
       });
+
+      // Kick off the auto-login. We wait one tick so any login banner /
+      // initial prompt the shell prints on startup lands first; otherwise
+      // the user's profile output collides with our `ssh ...` line.
+      const auto = autoSshLoginRef.current;
+      if (auto) {
+        setTimeout(() => {
+          if (disposed) return;
+          // Quote the target if it contains shell-significant chars; the
+          // common `user@host[:port]` form has no shell metacharacters so we
+          // skip quoting in the typical case for cleaner scrollback.
+          const safe = /^[A-Za-z0-9._@:-]+$/.test(auto.target);
+          const cmd = safe ? auto.target : `'${auto.target.replace(/'/g, `'\\''`)}'`;
+          void pty.write(`ssh ${cmd}\n`);
+        }, 200);
+      }
 
       // Intercept clipboard image pastes at the capture phase so xterm's
       // internal textarea never sees them. When the clipboard has an image
