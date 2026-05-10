@@ -106,8 +106,9 @@ export default function App() {
 
   const [home, setHome] = useState<string | null>(null);
   useEffect(() => {
+    // Forward-slash form so explorerRoot stays equal across home → OSC 7.
     homeDir()
-      .then(setHome)
+      .then((p) => setHome(p.replace(/\\/g, "/")))
       .catch(() => setHome(null));
   }, []);
 
@@ -389,7 +390,7 @@ export default function App() {
       const quoted = path.includes(" ")
         ? `'${path.replace(/'/g, `'\\''`)}'`
         : path;
-      term.write(`cd ${quoted}\n`);
+      term.write(`cd ${quoted}\r`);
       term.focus();
     },
     [activeId],
@@ -404,7 +405,7 @@ export default function App() {
         const quoted = path.includes(" ")
           ? `'${path.replace(/'/g, `'\\''`)}'`
           : path;
-        t.write(`cd ${quoted}\n`);
+        t.write(`cd ${quoted}\r`);
         t.focus();
       }, 80);
     },
@@ -810,10 +811,5 @@ export default function App() {
     </ThemeProvider>
   );
 
-  // Mount the composer provider whenever any provider has a key — independent
-  // of panelOpen — so toggling the panel never re-mounts terminals/editors.
-  if (hasComposer) {
-    return <AiComposerProvider>{shell}</AiComposerProvider>;
-  }
-  return shell;
+  return <AiComposerProvider>{shell}</AiComposerProvider>;
 }
