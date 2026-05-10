@@ -36,6 +36,7 @@ import {
   SshConnectDialog,
   useSshStore,
   useTabSshSession,
+  type SshConnectPayload,
 } from "@/modules/ssh";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -73,7 +74,7 @@ export default function App() {
     setActiveId,
     newTab,
     newSshTab,
-    clearPendingSshTarget,
+    clearPendingSshArgs,
     openFileTab,
     newPreviewTab,
     openAiDiffTab,
@@ -436,14 +437,20 @@ export default function App() {
 
   // +SSH dialog: create a terminal tab targeting the host, queue the password
   // for the PTY autologin, and kick off the parallel SFTP session with the
-  // same credentials so the sidebar lights up alongside the shell.
+  // same credentials (and same identity file, if the user passed `-i`) so
+  // the sidebar lights up alongside the shell.
   const handleSshConnect = useCallback(
-    (target: string, password: string | null) => {
-      const id = newSshTab(target);
-      if (password) setPendingSshPassword(id, password);
+    (payload: SshConnectPayload) => {
+      const id = newSshTab(payload.displayTarget, payload.rawArgs);
+      if (payload.password) setPendingSshPassword(id, payload.password);
       void useSshStore
         .getState()
-        .beginConnect(id, target, password ?? undefined);
+        .beginConnect(
+          id,
+          payload.sftpTarget,
+          payload.password ?? undefined,
+          payload.identityFile ?? undefined,
+        );
     },
     [newSshTab],
   );
@@ -680,7 +687,7 @@ export default function App() {
                         onSearchReady={handleSearchReady}
                         onCwd={handleTerminalCwd}
                         onDetectedLocalUrl={handleDetectedLocalUrl}
-                        onSshAutologinDone={clearPendingSshTarget}
+                        onSshAutologinDone={clearPendingSshArgs}
                       />
                     </div>
                     <div

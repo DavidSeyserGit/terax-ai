@@ -24,9 +24,10 @@ type Props = {
   tabId: number;
   visible: boolean;
   initialCwd?: string;
-  /** When set, the pane runs `ssh <target>` after the shell starts and
-   *  consumes the queued one-shot password from pendingPasswords.ts. */
-  pendingSshTarget?: string;
+  /** When set, the pane runs `ssh <args>` (verbatim, no quoting) after the
+   *  shell starts and consumes the queued one-shot password from
+   *  pendingPasswords.ts. The dialog is responsible for shell-safe args. */
+  pendingSshArgs?: string;
   onSearchReady?: (tabId: number, addon: SearchAddon) => void;
   onExit?: (tabId: number, code: number) => void;
   onCwd?: (tabId: number, cwd: string) => void;
@@ -40,7 +41,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
       tabId,
       visible,
       initialCwd,
-      pendingSshTarget,
+      pendingSshArgs,
       onSearchReady,
       onExit,
       onCwd,
@@ -54,11 +55,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
     const snifferRef = useRef<TerminalLineSniffer | null>(null);
     if (snifferRef.current === null) snifferRef.current = new TerminalLineSniffer();
 
-    // Snapshot the target on first render — props can churn but the autologin
+    // Snapshot the args on first render — props can churn but the autologin
     // only runs once. We pull the password lazily from pendingPasswords so it
     // never lands in component state.
-    const autoSshLoginRef = useRef<{ target: string } | null>(
-      pendingSshTarget ? { target: pendingSshTarget } : null,
+    const autoSshLoginRef = useRef<{ args: string } | null>(
+      pendingSshArgs ? { args: pendingSshArgs } : null,
     );
     const onSshAutologinDoneRef = useRef(onSshAutologinDone);
     onSshAutologinDoneRef.current = onSshAutologinDone;
@@ -69,7 +70,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
       initialCwd,
       autoSshLogin: autoSshLoginRef.current
         ? {
-            target: autoSshLoginRef.current.target,
+            args: autoSshLoginRef.current.args,
             consumePassword: () => consumePendingSshPassword(tabId),
             onLoginCompleted: () => onSshAutologinDoneRef.current?.(tabId),
           }

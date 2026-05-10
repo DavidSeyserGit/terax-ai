@@ -10,7 +10,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { parseSshDialogInput, type ParsedSshInput } from "./parseInput";
+
+export type SshConnectPayload = ParsedSshInput & {
+  password: string | null;
+};
 
 type Props = {
   open: boolean;
@@ -18,7 +23,7 @@ type Props = {
   /** Called when the user submits. The host opens a terminal tab, queues the
    *  password for one-shot use, and kicks off the parallel SFTP connection
    *  using the same credentials. */
-  onConnect: (target: string, password: string | null) => void;
+  onConnect: (payload: SshConnectPayload) => void;
 };
 
 export function SshConnectDialog({ open, onOpenChange, onConnect }: Props) {
@@ -33,10 +38,13 @@ export function SshConnectDialog({ open, onOpenChange, onConnect }: Props) {
     setTimeout(() => targetRef.current?.focus(), 0);
   }, [open]);
 
+  // Live preview lets the user see how a pasted `ssh user@host -p N -i …`
+  // string is being interpreted — host vs. port vs. key.
+  const parsed = useMemo(() => parseSshDialogInput(target), [target]);
+
   const submit = () => {
-    const t = target.trim();
-    if (!t) return;
-    onConnect(t, password ? password : null);
+    if (!parsed) return;
+    onConnect({ ...parsed, password: password ? password : null });
     // Wipe the local copy of the password as soon as we hand it off — the
     // terminal pane and the SFTP bridge each consume it once.
     setPassword("");
@@ -71,10 +79,28 @@ export function SshConnectDialog({ open, onOpenChange, onConnect }: Props) {
               ref={targetRef}
               value={target}
               onChange={(e) => setTarget(e.target.value)}
-              placeholder="user@host or user@host:port"
+              placeholder="user@host, or paste an `ssh user@host -p 22 -i ~/.ssh/key` line"
               autoComplete="off"
               spellCheck={false}
             />
+            {parsed && (parsed.identityFile || parsed.rawArgs !== parsed.displayTarget) && (
+              <div className="flex flex-col gap-0.5 text-[10px] text-muted-foreground">
+                <span>
+                  Target:{" "}
+                  <span className="font-mono text-foreground/80">
+                    {parsed.displayTarget}
+                  </span>
+                </span>
+                {parsed.identityFile && (
+                  <span>
+                    Identity:{" "}
+                    <span className="font-mono text-foreground/80">
+                      {parsed.identityFile}
+                    </span>
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-medium text-muted-foreground">
@@ -100,7 +126,7 @@ export function SshConnectDialog({ open, onOpenChange, onConnect }: Props) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={!target.trim()}>
+            <Button type="submit" disabled={!parsed}>
               Connect
             </Button>
           </DialogFooter>

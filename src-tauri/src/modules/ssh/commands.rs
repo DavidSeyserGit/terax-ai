@@ -18,9 +18,15 @@ pub struct SshConnectResult {
 pub async fn ssh_connect(
     target: String,
     password: Option<String>,
+    identity_file: Option<String>,
     state: State<'_, SshState>,
 ) -> Result<SshConnectResult, String> {
-    let (sess, port) = session::connect(&target, password.as_deref()).await?;
+    let (sess, port) = session::connect(
+        &target,
+        password.as_deref(),
+        identity_file.as_deref(),
+    )
+    .await?;
     let user = sess.user.clone();
     let host = sess.host.clone();
     let home = sess.home.clone();

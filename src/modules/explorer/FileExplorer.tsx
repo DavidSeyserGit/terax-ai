@@ -526,7 +526,9 @@ function SshErrorPanel({ ssh }: { ssh: SshTabSession }) {
   const submit = () => {
     const pw = password;
     setPassword("");
-    void useSshStore.getState().beginConnect(ssh.tabId, ssh.target, pw || undefined);
+    void useSshStore
+      .getState()
+      .beginConnect(ssh.tabId, ssh.target, pw || undefined, ssh.identityFile);
   };
   return (
     <>
@@ -578,7 +580,9 @@ function SshErrorPanel({ ssh }: { ssh: SshTabSession }) {
             size="sm"
             className="h-6 text-[11px]"
             onClick={() =>
-              void useSshStore.getState().beginConnect(ssh.tabId, ssh.target)
+              void useSshStore
+                .getState()
+                .beginConnect(ssh.tabId, ssh.target, undefined, ssh.identityFile)
             }
             title="Retry without password (key/agent only)"
           >

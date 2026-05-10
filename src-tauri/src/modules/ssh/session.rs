@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use russh::client::{self, AuthResult, Handle, Handler};
@@ -121,6 +121,7 @@ pub async fn authenticate(
     handle: &mut Handle<SkipHostKey>,
     user: &str,
     password: Option<&str>,
+    identity_file: Option<&str>,
 ) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
     let mut tried_anything = false;
@@ -138,14 +139,30 @@ pub async fn authenticate(
         }
     }
 
-    // ── 1. ssh-agent ────────────────────────────────────────────────────
+    // ── 1. caller-supplied identity file (e.g. `ssh -i …` from the dialog) ──
+    if let Some(p) = identity_file {
+        let path = expand_tilde(p);
+        tried_anything = true;
+        match try_disk_key(handle, user, &path).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => errors.push(format!("{} rejected", path.display())),
+            Err(KeyError::Encrypted) => errors.push(format!(
+                "{} is encrypted (run `ssh-add {}` to unlock it)",
+                path.display(),
+                path.display()
+            )),
+            Err(KeyError::Other(e)) => errors.push(format!("{}: {e}", path.display())),
+        }
+    }
+
+    // ── 2. ssh-agent ────────────────────────────────────────────────────
     match try_agent(handle, user).await {
         Ok(true) => return Ok(()),
         Ok(false) => {} // agent reachable but no identity worked
         Err(e) => errors.push(format!("agent: {e}")),
     }
 
-    // ── 2. unencrypted disk keys ────────────────────────────────────────
+    // ── 3. unencrypted disk keys ────────────────────────────────────────
     if let Some(home) = dirs::home_dir() {
         let ssh_dir = home.join(".ssh");
         let candidates = [
@@ -183,6 +200,20 @@ pub async fn authenticate(
         );
     }
     Err(format!("authentication failed: {}", errors.join("; ")))
+}
+
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    if p == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    PathBuf::from(p)
 }
 
 async fn try_agent(handle: &mut Handle<SkipHostKey>, user: &str) -> Result<bool, String> {
@@ -251,6 +282,7 @@ async fn try_disk_key(
 pub async fn connect(
     target: &str,
     password: Option<&str>,
+    identity_file: Option<&str>,
 ) -> Result<(SshSession, u16), String> {
     let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
     let (user, host, port) = parse_target(target, &default_user);
@@ -260,7 +292,7 @@ pub async fn connect(
         .await
         .map_err(|e| format!("connect {host}:{port}: {e}"))?;
 
-    authenticate(&mut handle, &user, password).await?;
+    authenticate(&mut handle, &user, password, identity_file).await?;
 
     // Resolve $HOME so the explorer can default the root path. We open one
     // extra exec channel rather than rely on canonicalize(".") because the

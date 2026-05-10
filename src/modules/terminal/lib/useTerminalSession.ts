@@ -26,12 +26,13 @@ type Options = {
    *  data is forwarded to the PTY so consumers can sniff for shell-level
    *  events (e.g. `ssh user@host`) without racing the remote echo. */
   onUserInput?: (chunk: string) => void;
-  /** Auto-runs `ssh <target>` once the PTY is ready and answers the standard
+  /** Auto-runs `ssh <args>` once the PTY is ready and answers the standard
    *  OpenSSH host-key + password prompts using the queued credentials. The
-   *  callback is invoked once the password has been injected (or skipped)
-   *  so the host can clear its pending state. */
+   *  args string is written verbatim — the caller is responsible for any
+   *  quoting it needs. The callback is invoked once the password has been
+   *  injected (or skipped) so the host can clear its pending state. */
   autoSshLogin?: {
-    target: string;
+    args: string;
     /** Pulled lazily so the password never sits in long-lived JS state. */
     consumePassword: () => string | undefined;
     onLoginCompleted?: () => void;
@@ -245,12 +246,10 @@ export function useTerminalSession({
       if (auto) {
         setTimeout(() => {
           if (disposed) return;
-          // Quote the target if it contains shell-significant chars; the
-          // common `user@host[:port]` form has no shell metacharacters so we
-          // skip quoting in the typical case for cleaner scrollback.
-          const safe = /^[A-Za-z0-9._@:-]+$/.test(auto.target);
-          const cmd = safe ? auto.target : `'${auto.target.replace(/'/g, `'\\''`)}'`;
-          void pty.write(`ssh ${cmd}\n`);
+          // The dialog already produced shell-safe args (it's whatever the
+          // user pasted, sans the leading `ssh `). Writing them verbatim
+          // preserves flags like `-p 22003 -i ~/.ssh/key` exactly.
+          void pty.write(`ssh ${auto.args}\n`);
         }, 200);
 
         // Fallback for key/agent auth: if no password prompt appeared after a

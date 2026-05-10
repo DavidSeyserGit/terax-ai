@@ -30,8 +30,12 @@ export type RemoteSearchHit = {
 };
 
 export const sshBridge = {
-  connect: (target: string, password?: string) =>
-    invoke<SshConnectResult>("ssh_connect", { target, password }),
+  connect: (target: string, password?: string, identityFile?: string) =>
+    invoke<SshConnectResult>("ssh_connect", {
+      target,
+      password,
+      identityFile,
+    }),
   disconnect: (sessionId: number) =>
     invoke<void>("ssh_disconnect", { sessionId }),
   readDir: (sessionId: number, path: string) =>

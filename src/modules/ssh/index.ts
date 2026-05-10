@@ -1,10 +1,14 @@
 export { sshBridge } from "./bridge";
-export { SshConnectDialog } from "./SshConnectDialog";
+export {
+  SshConnectDialog,
+  type SshConnectPayload,
+} from "./SshConnectDialog";
 export {
   clearPendingSshPassword,
   consumePendingSshPassword,
   setPendingSshPassword,
 } from "./pendingPasswords";
+export { parseSshDialogInput, type ParsedSshInput } from "./parseInput";
 export type {
   RemoteReadResult,
   RemoteSearchHit,

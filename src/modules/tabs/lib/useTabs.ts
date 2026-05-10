@@ -5,10 +5,12 @@ export type TerminalTab = {
   kind: "terminal";
   title: string;
   cwd?: string;
-  /** When set, the terminal pane auto-runs `ssh <target>` after the shell
-   *  starts. The matching password (if any) is held in pendingPasswords.ts
-   *  so it never lands in React state. */
-  pendingSshTarget?: string;
+  /** When set, the terminal pane auto-runs `ssh <pendingSshArgs>` after the
+   *  shell starts. The string is whatever the +SSH dialog parsed out — it
+   *  may include `-p`, `-i`, etc. — and is written verbatim, no quoting. The
+   *  matching password (if any) is held in pendingPasswords.ts so it never
+   *  lands in React state. */
+  pendingSshArgs?: string;
 };
 
 export type EditorTab = {
@@ -91,26 +93,26 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     return id;
   }, []);
 
-  const newSshTab = useCallback((target: string) => {
+  const newSshTab = useCallback((displayTitle: string, sshArgs: string) => {
     const id = nextIdRef.current++;
     setTabs((t) => [
       ...t,
       {
         id,
         kind: "terminal",
-        title: target,
-        pendingSshTarget: target,
+        title: displayTitle,
+        pendingSshArgs: sshArgs,
       },
     ]);
     setActiveId(id);
     return id;
   }, []);
 
-  const clearPendingSshTarget = useCallback((id: number) => {
+  const clearPendingSshArgs = useCallback((id: number) => {
     setTabs((t) =>
       t.map((x) =>
-        x.id === id && x.kind === "terminal" && x.pendingSshTarget !== undefined
-          ? { ...x, pendingSshTarget: undefined }
+        x.id === id && x.kind === "terminal" && x.pendingSshArgs !== undefined
+          ? { ...x, pendingSshArgs: undefined }
           : x,
       ),
     );
@@ -274,7 +276,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setActiveId,
     newTab,
     newSshTab,
-    clearPendingSshTarget,
+    clearPendingSshArgs,
     openFileTab,
     newPreviewTab,
     openAiDiffTab,

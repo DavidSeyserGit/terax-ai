@@ -81,8 +81,8 @@ export function TerminalStack({
               tabId={t.id}
               visible={t.id === activeId}
               initialCwd={t.kind === "terminal" ? t.cwd : undefined}
-              pendingSshTarget={
-                t.kind === "terminal" ? t.pendingSshTarget : undefined
+              pendingSshArgs={
+                t.kind === "terminal" ? t.pendingSshArgs : undefined
               }
               ref={b.setRef}
               onSearchReady={(_id, addon) => b.onSearch(addon)}
