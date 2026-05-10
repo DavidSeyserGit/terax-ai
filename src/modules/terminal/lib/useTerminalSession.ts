@@ -43,6 +43,17 @@ type Options = {
 const LOCAL_URL_RE =
   /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d{1,5})?(?:\/[^\s\x1b]*)?/g;
 
+// One-liner installed on the remote shell after autologin so cwd changes are
+// authoritative (tab-completion / aliases / history all go through the
+// shell's own $PWD by the time the prompt redraws). Bash uses
+// PROMPT_COMMAND, zsh uses precmd_functions; both branches are silent on the
+// other shell. Trailing newline so the shell executes it.
+const REMOTE_OSC7_INSTALL =
+  "__terax_pwd(){ printf '\\033]7;file://%s%s\\033\\\\' " +
+  '"${HOSTNAME:-$(hostname)}" "$PWD"; }; ' +
+  "PROMPT_COMMAND='__terax_pwd'$'\\n'\"${PROMPT_COMMAND:-}\"; " +
+  "precmd_functions+=(__terax_pwd) 2>/dev/null; __terax_pwd\n";
+
 export function useTerminalSession({
   container,
   visible,
@@ -190,6 +201,12 @@ export function useTerminalSession({
                   autologinCompleted = true;
                   auto.onLoginCompleted?.();
                   autoSshLoginRef.current = null;
+                  // Wait for the remote auth to settle, then install the OSC
+                  // 7 emitter. The remote shell will receive this once ssh
+                  // starts forwarding stdin to the shell session.
+                  setTimeout(() => {
+                    if (!disposed) void ptyRef.current?.write(REMOTE_OSC7_INSTALL);
+                  }, 1200);
                 }
               }
             }
@@ -228,6 +245,17 @@ export function useTerminalSession({
           const cmd = safe ? auto.target : `'${auto.target.replace(/'/g, `'\\''`)}'`;
           void pty.write(`ssh ${cmd}\n`);
         }, 200);
+
+        // Fallback for key/agent auth: if no password prompt appeared after a
+        // few seconds, treat the login as done and install the OSC 7 emitter
+        // so cwd sync starts working without a manual prompt.
+        setTimeout(() => {
+          if (disposed || autologinCompleted) return;
+          autologinCompleted = true;
+          auto.onLoginCompleted?.();
+          autoSshLoginRef.current = null;
+          void ptyRef.current?.write(REMOTE_OSC7_INSTALL);
+        }, 4000);
       }
 
       // Intercept clipboard image pastes at the capture phase so xterm's
