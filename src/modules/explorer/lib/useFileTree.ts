@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { localFsAdapter, type FsAdapter } from "./fsAdapter";
 
 export type DirEntry = {
   name: string;
@@ -35,9 +35,14 @@ export function dirname(path: string): string {
 type Options = {
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
+  /** Filesystem backend. Defaults to the local Tauri commands; pass a remote
+   *  adapter to drive the explorer over SFTP. The hook resets all state when
+   *  the adapter id changes. */
+  fs?: FsAdapter;
 };
 
 export function useFileTree(rootPath: string | null, options?: Options) {
+  const fs = options?.fs ?? localFsAdapter;
   const [nodes, setNodes] = useState<TreeState>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [pendingCreate, setPendingCreate] = useState<PendingCreate | null>(
@@ -45,20 +50,24 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   );
   const [renaming, setRenaming] = useState<string | null>(null);
 
-  const fetchChildren = useCallback(async (path: string) => {
-    setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
-    try {
-      const entries = await invoke<DirEntry[]>("fs_read_dir", { path });
-      setNodes((s) => ({ ...s, [path]: { status: "loaded", entries } }));
-    } catch (e) {
-      setNodes((s) => ({
-        ...s,
-        [path]: { status: "error", message: String(e) },
-      }));
-    }
-  }, []);
+  const fetchChildren = useCallback(
+    async (path: string) => {
+      setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
+      try {
+        const entries = await fs.readDir(path);
+        setNodes((s) => ({ ...s, [path]: { status: "loaded", entries } }));
+      } catch (e) {
+        setNodes((s) => ({
+          ...s,
+          [path]: { status: "error", message: String(e) },
+        }));
+      }
+    },
+    [fs],
+  );
 
-  // Root change → reset state.
+  // Root change OR adapter swap → reset state. Including `fs.id` in the dep
+  // makes a remote→local switch (or vice-versa) wipe stale entries.
   useEffect(() => {
     if (!rootPath) {
       setNodes({});
@@ -72,7 +81,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     setExpanded(new Set());
     setNodes({});
     void fetchChildren(rootPath);
-  }, [rootPath, fetchChildren]);
+  }, [rootPath, fetchChildren, fs.id]);
 
   const toggle = useCallback(
     (path: string) => {
@@ -149,18 +158,20 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         return;
       }
       const path = joinPath(pendingCreate.parentPath, trimmed);
-      const cmd =
-        pendingCreate.kind === "dir" ? "fs_create_dir" : "fs_create_file";
       try {
-        await invoke(cmd, { path });
+        if (pendingCreate.kind === "dir") {
+          await fs.createDir(path);
+        } else {
+          await fs.createFile(path);
+        }
         await fetchChildren(pendingCreate.parentPath);
       } catch (e) {
-        console.error(`${cmd} failed:`, e);
+        console.error(`create ${pendingCreate.kind} failed:`, e);
       } finally {
         setPendingCreate(null);
       }
     },
-    [pendingCreate, fetchChildren],
+    [pendingCreate, fetchChildren, fs],
   );
 
   const beginRename = useCallback((path: string) => {
@@ -182,29 +193,29 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       }
       const to = joinPath(parent, trimmed);
       try {
-        await invoke("fs_rename", { from: renaming, to });
+        await fs.rename(renaming, to);
         options?.onPathRenamed?.(renaming, to);
         await fetchChildren(parent);
       } catch (e) {
-        console.error("fs_rename failed:", e);
+        console.error("rename failed:", e);
       } finally {
         setRenaming(null);
       }
     },
-    [renaming, fetchChildren, options],
+    [renaming, fetchChildren, options, fs],
   );
 
   const deletePath = useCallback(
     async (path: string) => {
       try {
-        await invoke("fs_delete", { path });
+        await fs.delete(path);
         options?.onPathDeleted?.(path);
         await fetchChildren(dirname(path));
       } catch (e) {
-        console.error("fs_delete failed:", e);
+        console.error("delete failed:", e);
       }
     },
-    [fetchChildren, options],
+    [fetchChildren, options, fs],
   );
 
   return {

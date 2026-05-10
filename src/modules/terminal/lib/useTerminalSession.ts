@@ -1,4 +1,6 @@
 import { buildTerminalTheme } from "@/styles/terminalTheme";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -20,12 +22,37 @@ type Options = {
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
   onDetectedLocalUrl?: (url: string) => void;
+  /** Raw keystrokes the user typed into the terminal. Fires *before* the
+   *  data is forwarded to the PTY so consumers can sniff for shell-level
+   *  events (e.g. `ssh user@host`) without racing the remote echo. */
+  onUserInput?: (chunk: string) => void;
+  /** Auto-runs `ssh <target>` once the PTY is ready and answers the standard
+   *  OpenSSH host-key + password prompts using the queued credentials. The
+   *  callback is invoked once the password has been injected (or skipped)
+   *  so the host can clear its pending state. */
+  autoSshLogin?: {
+    target: string;
+    /** Pulled lazily so the password never sits in long-lived JS state. */
+    consumePassword: () => string | undefined;
+    onLoginCompleted?: () => void;
+  };
 };
 
 // Matches dev-server-style local URLs (vite, next dev, webpack, …). Anchors
 // on a word boundary so we don't catch substrings of longer paths.
 const LOCAL_URL_RE =
   /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d{1,5})?(?:\/[^\s\x1b]*)?/g;
+
+// One-liner installed on the remote shell after autologin so cwd changes are
+// authoritative (tab-completion / aliases / history all go through the
+// shell's own $PWD by the time the prompt redraws). Bash uses
+// PROMPT_COMMAND, zsh uses precmd_functions; both branches are silent on the
+// other shell. Trailing newline so the shell executes it.
+const REMOTE_OSC7_INSTALL =
+  "__terax_pwd(){ printf '\\033]7;file://%s%s\\033\\\\' " +
+  '"${HOSTNAME:-$(hostname)}" "$PWD"; }; ' +
+  "PROMPT_COMMAND='__terax_pwd'$'\\n'\"${PROMPT_COMMAND:-}\"; " +
+  "precmd_functions+=(__terax_pwd) 2>/dev/null; __terax_pwd\n";
 
 export function useTerminalSession({
   container,
@@ -35,18 +62,26 @@ export function useTerminalSession({
   onExit,
   onCwd,
   onDetectedLocalUrl,
+  onUserInput,
+  autoSshLogin,
 }: Options) {
   const detectedRef = useRef<string | null>(null);
   const onDetectedRef = useRef(onDetectedLocalUrl);
   const onCwdRef = useRef(onCwd);
   const onExitRef = useRef(onExit);
   const onSearchReadyRef = useRef(onSearchReady);
+  const onUserInputRef = useRef(onUserInput);
+  // autoSshLogin is captured *once* on mount — re-issuing the ssh command on
+  // every prop change would loop the login. The host clears its pending state
+  // via onLoginCompleted before we'd ever rebind anyway.
+  const autoSshLoginRef = useRef<Options["autoSshLogin"] | null>(autoSshLogin);
   useEffect(() => {
     onDetectedRef.current = onDetectedLocalUrl;
     onCwdRef.current = onCwd;
     onExitRef.current = onExit;
     onSearchReadyRef.current = onSearchReady;
-  }, [onDetectedLocalUrl, onCwd, onExit, onSearchReady]);
+    onUserInputRef.current = onUserInput;
+  }, [onDetectedLocalUrl, onCwd, onExit, onSearchReady, onUserInput]);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
@@ -113,6 +148,16 @@ export function useTerminalSession({
       // Per-session decoder so interleaved chunks across tabs don't splice
       // a multi-byte UTF-8 codepoint between unrelated streams.
       const urlDecoder = new TextDecoder("utf-8", { fatal: false });
+      // Separate decoder for the autologin sniffer so its `stream: true` state
+      // doesn't interfere with URL detection.
+      const sshSniffDecoder = new TextDecoder("utf-8", { fatal: false });
+      // Rolling tail of recently decoded output. Match patterns against this
+      // so a prompt split across chunks (`pass` + `word: `) still triggers.
+      const SSH_SNIFF_TAIL_MAX = 256;
+      let sshSniffTail = "";
+      let hostKeyAnswered = false;
+      let passwordSent = false;
+      let autologinCompleted = false;
 
       const pty = await openPty(
         term.cols,
@@ -134,7 +179,46 @@ export function useTerminalSession({
                 }
               }
             }
+            // Auto-login: watch for the OpenSSH client's interactive prompts
+            // and answer them on the user's behalf. Stops sniffing once the
+            // password has been delivered (or there was nothing to deliver).
+            const auto = autoSshLoginRef.current;
+            if (auto && !autologinCompleted) {
+              const text = sshSniffDecoder.decode(bytes, { stream: true });
+              if (text) {
+                sshSniffTail = (sshSniffTail + text).slice(-SSH_SNIFF_TAIL_MAX);
+                if (
+                  !hostKeyAnswered &&
+                  /\(yes\/no(?:\/\[fingerprint\])?\)\?\s*$/i.test(sshSniffTail)
+                ) {
+                  hostKeyAnswered = true;
+                  void ptyRef.current?.write("yes\n");
+                  sshSniffTail = "";
+                } else if (
+                  !passwordSent &&
+                  /password:\s*$/i.test(sshSniffTail)
+                ) {
+                  const pw = auto.consumePassword();
+                  passwordSent = true;
+                  if (pw !== undefined) void ptyRef.current?.write(`${pw}\n`);
+                  sshSniffTail = "";
+                  // Either way, login attempt is done from our perspective —
+                  // further prompts (wrong password, stacked auth) are on the
+                  // user. Clear the autologin so the next sniff stops early.
+                  autologinCompleted = true;
+                  auto.onLoginCompleted?.();
+                  autoSshLoginRef.current = null;
+                  // Wait for the remote auth to settle, then install the OSC
+                  // 7 emitter. The remote shell will receive this once ssh
+                  // starts forwarding stdin to the shell session.
+                  setTimeout(() => {
+                    if (!disposed) void ptyRef.current?.write(REMOTE_OSC7_INSTALL);
+                  }, 1200);
+                }
+              }
+            }
           },
+          onCwd: (cwd) => onCwdRef.current?.(cwd),
           onExit: (code) => {
             term.write(`\r\n\x1b[2m[process exited: ${code}]\x1b[0m\r\n`);
             term.options.disableStdin = true;
@@ -149,7 +233,176 @@ export function useTerminalSession({
       }
       ptyRef.current = pty;
 
-      term.onData((data) => pty.write(data));
+      term.onData((data) => {
+        onUserInputRef.current?.(data);
+        pty.write(data);
+      });
+
+      // Kick off the auto-login. We wait one tick so any login banner /
+      // initial prompt the shell prints on startup lands first; otherwise
+      // the user's profile output collides with our `ssh ...` line.
+      const auto = autoSshLoginRef.current;
+      if (auto) {
+        setTimeout(() => {
+          if (disposed) return;
+          // Quote the target if it contains shell-significant chars; the
+          // common `user@host[:port]` form has no shell metacharacters so we
+          // skip quoting in the typical case for cleaner scrollback.
+          const safe = /^[A-Za-z0-9._@:-]+$/.test(auto.target);
+          const cmd = safe ? auto.target : `'${auto.target.replace(/'/g, `'\\''`)}'`;
+          void pty.write(`ssh ${cmd}\n`);
+        }, 200);
+
+        // Fallback for key/agent auth: if no password prompt appeared after a
+        // few seconds, treat the login as done and install the OSC 7 emitter
+        // so cwd sync starts working without a manual prompt.
+        setTimeout(() => {
+          if (disposed || autologinCompleted) return;
+          autologinCompleted = true;
+          auto.onLoginCompleted?.();
+          autoSshLoginRef.current = null;
+          void ptyRef.current?.write(REMOTE_OSC7_INSTALL);
+        }, 4000);
+      }
+
+      // Intercept clipboard image pastes at the capture phase so xterm's
+      // internal textarea never sees them. When the clipboard has an image
+      // (no text), xterm sends nothing to the PTY — Claude Code and other
+      // CLIs never learn a paste was attempted. Instead we write the image
+      // to a temp file and paste the path into the PTY.
+      const handleImagePaste = async (event: ClipboardEvent) => {
+        const active = document.activeElement;
+        // Only act when focus is inside our terminal container.
+        const termEl = container.current;
+        if (!termEl || (!termEl.contains(active) && active !== termEl)) return;
+
+        const items = Array.from(event.clipboardData?.items ?? []);
+        const imgItem = items.find((i) => i.type.startsWith("image/"));
+        if (!imgItem) return; // text/other paste — let xterm handle normally
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        try {
+          const blob = imgItem.getAsFile();
+          if (!blob) return;
+          const buf = await blob.arrayBuffer();
+          const u8 = new Uint8Array(buf);
+
+          // btoa via String.fromCharCode has a call-stack limit on large
+          // images, so we chunk the conversion.
+          let binary = "";
+          const chunk = 8_192;
+          for (let i = 0; i < u8.length; i += chunk) {
+            binary += String.fromCharCode(...u8.subarray(i, i + chunk));
+          }
+
+          const ext =
+            (imgItem.type.split("/")[1] ?? "png").replace("jpeg", "jpg");
+          const path = await invoke<string>("write_temp_image", {
+            data: btoa(binary),
+            ext,
+          });
+          ptyRef.current?.write(path);
+        } catch (err) {
+          console.error("[terax] image paste failed:", err);
+        }
+      };
+
+      document.addEventListener("paste", handleImagePaste, { capture: true });
+      cleanups.push(() =>
+        document.removeEventListener("paste", handleImagePaste, {
+          capture: true,
+        }),
+      );
+
+      // ── Drag-and-drop image support ──────────────────────────────────────
+      // Two channels are needed:
+      //   1. Tauri native drop — fires for files dragged from Finder/Explorer.
+      //      Tauri intercepts these before HTML5 events, but gives us the real
+      //      filesystem path so no temp-file write is required.
+      //   2. HTML5 drop — fires for images dragged from a browser window.
+      //      Here we read the bytes and write to a temp file (same path as paste).
+
+      // Reusable helper: encode an ArrayBuffer as base64 without exceeding the
+      // call-stack limit that `String.fromCharCode(...largeArray)` would hit.
+      const arrayBufferToBase64 = (buf: ArrayBuffer): string => {
+        const u8 = new Uint8Array(buf);
+        let binary = "";
+        const chunk = 8_192;
+        for (let i = 0; i < u8.length; i += chunk) {
+          binary += String.fromCharCode(...u8.subarray(i, i + chunk));
+        }
+        return btoa(binary);
+      };
+
+      const IMAGE_EXT_RE =
+        /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico|heic|avif)$/i;
+
+      // 1. Tauri native file-drop (Finder → terminal).
+      //    The payload contains actual filesystem paths — paste the image path
+      //    directly without creating a temp copy.
+      const unlistenDrop = await listen<{
+        paths: string[];
+        position: { x: number; y: number };
+      }>("tauri://drag-drop", (event) => {
+        const termEl = container.current;
+        if (!termEl) return;
+
+        const { paths, position } = event.payload;
+        if (!paths?.length) return;
+
+        // Tauri positions are in physical pixels; convert to CSS pixels.
+        const dpr = window.devicePixelRatio || 1;
+        const lx = position.x / dpr;
+        const ly = position.y / dpr;
+        const rect = termEl.getBoundingClientRect();
+        if (lx < rect.left || lx > rect.right || ly < rect.top || ly > rect.bottom)
+          return;
+
+        const imgPath = paths.find((p) => IMAGE_EXT_RE.test(p));
+        if (!imgPath) return;
+
+        ptyRef.current?.write(imgPath);
+      });
+      cleanups.push(unlistenDrop);
+
+      // 2. HTML5 drop (image dragged from browser / other web source).
+      const handleDragOver = (event: DragEvent) => {
+        if (!event.dataTransfer?.types.includes("Files")) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      };
+
+      const handleDrop = async (event: DragEvent) => {
+        event.preventDefault();
+        const files = Array.from(event.dataTransfer?.files ?? []);
+        const imgFile = files.find((f) => f.type.startsWith("image/"));
+        if (!imgFile) return;
+
+        try {
+          const buf = await imgFile.arrayBuffer();
+          const ext = (imgFile.type.split("/")[1] ?? "png").replace(
+            "jpeg",
+            "jpg",
+          );
+          const path = await invoke<string>("write_temp_image", {
+            data: arrayBufferToBase64(buf),
+            ext,
+          });
+          ptyRef.current?.write(path);
+        } catch (err) {
+          console.error("[terax] image drop failed:", err);
+        }
+      };
+
+      const dropTarget = container.current;
+      dropTarget.addEventListener("dragover", handleDragOver);
+      dropTarget.addEventListener("drop", handleDrop);
+      cleanups.push(() => {
+        dropTarget.removeEventListener("dragover", handleDragOver);
+        dropTarget.removeEventListener("drop", handleDrop);
+      });
 
       // Two-stage debounce:
       //  - FIT runs frequently (~one frame) so xterm visually keeps up with

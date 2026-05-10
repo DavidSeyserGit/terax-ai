@@ -10,6 +10,9 @@ type Props = {
   onSearchReady: (id: number, addon: SearchAddon) => void;
   onCwd: (id: number, cwd: string) => void;
   onDetectedLocalUrl: (id: number, url: string) => void;
+  /** Called once the terminal pane has finished its auto-login flow so the
+   *  host can clear `pendingSshTarget` from the tab. */
+  onSshAutologinDone?: (id: number) => void;
 };
 
 export function TerminalStack({
@@ -19,6 +22,7 @@ export function TerminalStack({
   onSearchReady,
   onCwd,
   onDetectedLocalUrl,
+  onSshAutologinDone,
 }: Props) {
   const terminals = tabs.filter((t) => t.kind === "terminal");
 
@@ -77,10 +81,14 @@ export function TerminalStack({
               tabId={t.id}
               visible={t.id === activeId}
               initialCwd={t.kind === "terminal" ? t.cwd : undefined}
+              pendingSshTarget={
+                t.kind === "terminal" ? t.pendingSshTarget : undefined
+              }
               ref={b.setRef}
               onSearchReady={(_id, addon) => b.onSearch(addon)}
               onCwd={(_id, cwd) => b.onCwd(cwd)}
               onDetectedLocalUrl={(_id, url) => b.onDetectedUrl(url)}
+              onSshAutologinDone={onSshAutologinDone}
             />
           </div>
         );

@@ -1,3 +1,4 @@
+import { sshBridge } from "@/modules/ssh";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -16,9 +17,12 @@ export type DocumentState =
 type Options = {
   path: string;
   onDirtyChange?: (dirty: boolean) => void;
+  /** When set, route reads/writes through SFTP for this remote session
+   *  instead of the local Tauri filesystem commands. */
+  sshSessionId?: number;
 };
 
-export function useDocument({ path, onDirtyChange }: Options) {
+export function useDocument({ path, onDirtyChange, sshSessionId }: Options) {
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
   const [reloadCounter, setReloadCounter] = useState(0);
@@ -46,7 +50,11 @@ export function useDocument({ path, onDirtyChange }: Options) {
     setDoc({ status: "loading" });
     setDirty(false);
 
-    invoke<ReadResult>("fs_read_file", { path })
+    const reader =
+      sshSessionId !== undefined
+        ? sshBridge.readFile(sshSessionId, path)
+        : invoke<ReadResult>("fs_read_file", { path });
+    reader
       .then((res) => {
         if (cancelled) return;
         if (res.kind === "text") {
@@ -74,7 +82,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
     return () => {
       cancelled = true;
     };
-  }, [path, reloadCounter]);
+  }, [path, reloadCounter, sshSessionId]);
 
   /** Re-read the file from disk. No-op (silent) if the buffer is dirty —
    *  callers shouldn't clobber unsaved user edits. Returns whether reload ran. */
@@ -92,10 +100,14 @@ export function useDocument({ path, onDirtyChange }: Options) {
   const save = useCallback(async () => {
     if (!dirty) return;
     const content = bufferRef.current;
-    await invoke("fs_write_file", { path, content });
+    if (sshSessionId !== undefined) {
+      await sshBridge.writeFile(sshSessionId, path, content);
+    } else {
+      await invoke("fs_write_file", { path, content });
+    }
     savedRef.current = content;
     setDirty(false);
-  }, [path, dirty]);
+  }, [path, dirty, sshSessionId]);
 
   return { doc, dirty, onChange, save, reload };
 }
