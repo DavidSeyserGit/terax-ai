@@ -31,7 +31,7 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { PreviewStack, type PreviewPaneHandle } from "@/modules/preview";
-import { useTabSshSession } from "@/modules/ssh";
+import { useSshStore, useTabSshSession } from "@/modules/ssh";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
@@ -410,6 +410,21 @@ export default function App() {
     [openFileTab],
   );
 
+  // Sidebar-initiated disconnect: send `exit` to the matching PTY so the
+  // shell tears down its remote session in lockstep with our SFTP channel.
+  // We send a leading newline first to interrupt any half-typed line, and
+  // schedule the SFTP teardown after a beat so the user sees the exit.
+  const handleSshDisconnect = useCallback(
+    (tabId: number) => {
+      const term = terminalRefs.current.get(tabId);
+      if (term) term.write("\nexit\n");
+      setTimeout(() => {
+        void useSshStore.getState().disconnect(tabId);
+      }, 50);
+    },
+    [],
+  );
+
   const handlePathRenamed = useCallback(
     (from: string, to: string) => {
       for (const t of tabs) {
@@ -619,6 +634,7 @@ export default function App() {
                     onRevealInTerminal={cdInNewTab}
                     onAttachToAgent={handleAttachFileToAgent}
                     ssh={activeSshSession}
+                    onSshDisconnect={handleSshDisconnect}
                   />
                 </div>
               </ResizablePanel>

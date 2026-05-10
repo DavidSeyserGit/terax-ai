@@ -1,4 +1,4 @@
-import { TerminalLineSniffer, useSshStore } from "@/modules/ssh";
+import { resolveRemoteCd, TerminalLineSniffer, useSshStore } from "@/modules/ssh";
 import { useTheme } from "@/modules/theme";
 import type { SearchAddon } from "@xterm/addon-search";
 import {
@@ -50,7 +50,15 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
       initialCwd,
       onSearchReady: (a) => onSearchReady?.(tabId, a),
       onExit: (c) => onExit?.(tabId, c),
-      onCwd: (c) => onCwd?.(tabId, c),
+      onCwd: (c) => {
+        // OSC 7 from the remote shell (when it's set up) is the most reliable
+        // cwd signal; mirror it into the SSH session if one is connected.
+        const sshSession = useSshStore.getState().sessions[tabId];
+        if (sshSession?.status === "connected") {
+          useSshStore.getState().setCwd(tabId, c);
+        }
+        onCwd?.(tabId, c);
+      },
       onDetectedLocalUrl: (u) => onDetectedLocalUrl?.(tabId, u),
       onUserInput: (chunk) => {
         const detection = snifferRef.current?.feed(chunk);
@@ -63,6 +71,17 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
           // session too so the badge clears and the explorer falls back to
           // the local FS.
           void store.disconnect(tabId);
+        } else if (detection.kind === "cd") {
+          // Best-effort cwd tracking when the remote shell doesn't emit OSC
+          // 7. We only act on a connected SSH session — local `cd` already
+          // gets picked up via the local OSC 7 handler.
+          const sshSession = store.sessions[tabId];
+          if (sshSession?.status !== "connected") return;
+          const base = sshSession.cwd ?? sshSession.home ?? "/";
+          const next = detection.target
+            ? resolveRemoteCd(base, detection.target, sshSession.home)
+            : (sshSession.home ?? base);
+          store.setCwd(tabId, next);
         }
       },
     });

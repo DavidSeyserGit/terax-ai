@@ -8,6 +8,7 @@ export type {
 } from "./bridge";
 export { TerminalLineSniffer } from "./detector";
 export type { Detection } from "./detector";
+export { normalizePosix, resolveRemoteCd } from "./path";
 export {
   useSshStore,
   useTabSshSession,

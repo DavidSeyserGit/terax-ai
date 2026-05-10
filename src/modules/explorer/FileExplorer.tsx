@@ -47,6 +47,9 @@ type Props = {
   /** Active terminal's SSH session, if any. When connected, the explorer
    *  switches to a remote SFTP backend rooted at the remote $HOME. */
   ssh?: SshTabSession | null;
+  /** Called when the user disconnects from the chip; lets the host send
+   *  `exit` to the matching PTY so terminal + sidebar stay in sync. */
+  onSshDisconnect?: (tabId: number) => void;
 };
 
 function basename(path: string): string {
@@ -62,7 +65,12 @@ export function FileExplorer({
   onRevealInTerminal,
   onAttachToAgent,
   ssh,
+  onSshDisconnect,
 }: Props) {
+  const disconnectSsh = (tabId: number) => {
+    if (onSshDisconnect) onSshDisconnect(tabId);
+    else void useSshStore.getState().disconnect(tabId);
+  };
   // Pick the FS backend to drive the tree. A connected SSH tab swaps in a
   // SFTP-backed adapter and reroots the explorer at the remote $HOME.
   const isRemote = ssh?.status === "connected" && ssh.sessionId !== undefined;
@@ -73,7 +81,9 @@ export function FileExplorer({
         : localFsAdapter,
     [isRemote, ssh?.sessionId],
   );
-  const effectiveRoot = isRemote ? (ssh?.home ?? "/") : rootPath;
+  const effectiveRoot = isRemote
+    ? (ssh?.cwd ?? ssh?.home ?? "/")
+    : rootPath;
   const tree = useFileTree(effectiveRoot, { onPathRenamed, onPathDeleted, fs });
 
   // Wrap onOpenFile so callers in this tree always get the right SSH context.
@@ -155,7 +165,7 @@ export function FileExplorer({
     return (
       <div className="flex h-full flex-col">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
-          <SshChip ssh={ssh} />
+          <SshChip ssh={ssh} cwd={ssh.cwd} onDisconnect={() => disconnectSsh(ssh.tabId)} />
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
           {ssh.status === "connecting" || ssh.status === "disconnecting" ? (
@@ -278,7 +288,7 @@ export function FileExplorer({
     >
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
         {ssh && ssh.status === "connected" ? (
-          <SshChip ssh={ssh} />
+          <SshChip ssh={ssh} cwd={ssh.cwd} onDisconnect={() => disconnectSsh(ssh.tabId)} />
         ) : (
           <span
             className="flex-1 flex truncate text-xs font-medium text-foreground/80"
@@ -589,8 +599,20 @@ function SshErrorPanel({ ssh }: { ssh: SshTabSession }) {
   );
 }
 
-function SshChip({ ssh }: { ssh: SshTabSession }) {
+function SshChip({
+  ssh,
+  cwd,
+  onDisconnect,
+}: {
+  ssh: SshTabSession;
+  cwd?: string | null;
+  onDisconnect?: () => void;
+}) {
   const label = ssh.user && ssh.host ? `${ssh.user}@${ssh.host}` : ssh.target;
+  // Truncate the cwd to its leaf for the chip; full path is in the title.
+  const cwdLeaf = cwd && cwd !== ssh.home
+    ? cwd.replace(/\/$/, "").split("/").filter(Boolean).pop() ?? cwd
+    : null;
   const tone =
     ssh.status === "connected"
       ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
@@ -605,7 +627,10 @@ function SshChip({ ssh }: { ssh: SshTabSession }) {
         : "bg-muted-foreground/60 animate-pulse";
 
   return (
-    <div className="flex flex-1 items-center gap-1.5 truncate" title={`SSH ${label}`}>
+    <div
+      className="flex flex-1 items-center gap-1.5 truncate"
+      title={`ssh ${label}${cwd ? `\n${cwd}` : ""}`}
+    >
       <div
         className={cn(
           "flex flex-1 min-w-0 items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
@@ -613,7 +638,13 @@ function SshChip({ ssh }: { ssh: SshTabSession }) {
         )}
       >
         <HugeiconsIcon icon={Globe02Icon} size={11} strokeWidth={2} className="shrink-0" />
-        <span className="truncate font-mono">ssh: {label}</span>
+        <span className="truncate font-mono">{label}</span>
+        {cwdLeaf && (
+          <>
+            <span className="text-muted-foreground/60 shrink-0">·</span>
+            <span className="truncate font-mono text-foreground/70">{cwdLeaf}</span>
+          </>
+        )}
         <span className={cn("ml-auto size-1.5 shrink-0 rounded-full", dotTone)} />
       </div>
       {ssh.status === "connected" && (
@@ -621,8 +652,8 @@ function SshChip({ ssh }: { ssh: SshTabSession }) {
           variant="ghost"
           size="icon"
           className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={() => void useSshStore.getState().disconnect(ssh.tabId)}
-          title="Disconnect SSH"
+          onClick={() => onDisconnect?.()}
+          title="Disconnect SSH (also exits the terminal session)"
         >
           <HugeiconsIcon icon={Logout03Icon} size={11} strokeWidth={2} />
         </Button>

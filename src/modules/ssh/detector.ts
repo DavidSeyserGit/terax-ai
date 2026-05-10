@@ -18,7 +18,13 @@ export type SshDetection = {
 
 export type ExitDetection = { kind: "exit" };
 
-export type Detection = SshDetection | ExitDetection;
+export type CdDetection = {
+  kind: "cd";
+  /** Raw arg as typed; null when the user typed bare `cd` (= home). */
+  target: string | null;
+};
+
+export type Detection = SshDetection | ExitDetection | CdDetection;
 
 export class TerminalLineSniffer {
   private buf: string = "";
@@ -99,6 +105,16 @@ function parseLine(line: string): Detection | null {
   const tokens = trimmed.split(/\s+/);
   let i = 0;
   while (i < tokens.length && /^[A-Z_][A-Z0-9_]*=/i.test(tokens[i])) i++;
+  if (tokens[i] === "cd") {
+    // `cd` (bare) → home; `cd -` → previous (skip, we don't track history);
+    // anything else is the target. Quotes stripped because users often
+    // wrap a path with spaces.
+    const rest = tokens.slice(i + 1).join(" ");
+    if (!rest) return { kind: "cd", target: null };
+    if (rest.trim() === "-") return null;
+    const stripped = rest.replace(/^['"]|['"]$/g, "");
+    return { kind: "cd", target: stripped };
+  }
   if (tokens[i] !== "ssh") return null;
   i++;
   let portOverride: number | null = null;
