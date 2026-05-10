@@ -20,7 +20,8 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef } from "react";
+import { useSshStore } from "@/modules/ssh";
+import { useEffect, useMemo, useRef } from "react";
 import type { Tab } from "./lib/useTabs";
 
 type Props = {
@@ -70,6 +71,16 @@ export function TabBar({
     active?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeId, tabs.length]);
 
+  // SSH tabs get a tinted treatment so they're scannable next to local
+  // shells. We watch the store directly instead of plumbing the state down
+  // — TabBar is the only place that needs it.
+  const sshSessions = useSshStore((s) => s.sessions);
+  const sshTabIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const id of Object.keys(sshSessions)) ids.add(Number(id));
+    return ids;
+  }, [sshSessions]);
+
   return (
     <div
       ref={scrollRef}
@@ -82,14 +93,21 @@ export function TabBar({
           onValueChange={(v) => onSelect(Number(v))}
         >
           <TabsList className="h-7 w-max gap-0.5 bg-transparent p-0">
-            {tabs.map((t) => (
+            {tabs.map((t) => {
+              const isSsh = sshTabIds.has(t.id);
+              return (
               <TabsTrigger
                 key={t.id}
                 value={String(t.id)}
                 data-tab-id={t.id}
                 className={cn(
-                  "group h-7 shrink-0 gap-1.5 rounded-md text-xs text-muted-foreground transition-colors data-[state=active]:bg-accent data-[state=active]:text-foreground hover:text-foreground/80 justify-between",
-                  compact ? "px-1.5!" : "ps-2! pe-1!"
+                  "group h-7 shrink-0 gap-1.5 rounded-md text-xs transition-colors hover:text-foreground/80 justify-between",
+                  compact ? "px-1.5!" : "ps-2! pe-1!",
+                  isSsh
+                    ? // Subtle emerald tint matches the SSH chip in the explorer
+                      // header so the connection state is recognizable at a glance.
+                      "text-emerald-200/85 data-[state=active]:bg-emerald-500/15 data-[state=active]:text-emerald-100 data-[state=inactive]:bg-emerald-500/[0.06]"
+                    : "text-muted-foreground data-[state=active]:bg-accent data-[state=active]:text-foreground",
                 )}
               >
                 <span
@@ -98,7 +116,7 @@ export function TabBar({
                     compact ? "max-w-32" : "max-w-56",
                   )}
                 >
-                  <TabIcon tab={t} active={t.id === activeId} />
+                  <TabIcon tab={t} active={t.id === activeId} isSsh={isSsh} />
                   <span className="truncate">{labelFor(t)}</span>
                   {t.kind === "editor" && t.dirty ? (
                     <span
@@ -125,7 +143,8 @@ export function TabBar({
                   </span>
                 )}
               </TabsTrigger>
-            ))}
+              );
+            })}
           </TabsList>
         </Tabs>
         <DropdownMenu>
@@ -175,7 +194,25 @@ export function TabBar({
   );
 }
 
-function TabIcon({ tab, active }: { tab: Tab; active: boolean }) {
+function TabIcon({
+  tab,
+  active,
+  isSsh,
+}: {
+  tab: Tab;
+  active: boolean;
+  isSsh?: boolean;
+}) {
+  if (tab.kind === "terminal" && isSsh) {
+    return (
+      <HugeiconsIcon
+        icon={Globe02Icon}
+        size={14}
+        strokeWidth={1.75}
+        className="shrink-0 text-emerald-300/90"
+      />
+    );
+  }
   if (tab.kind === "editor") {
     const url = fileIconUrl(tab.title);
     return url ? <img src={url} alt="" className="size-3.5 shrink-0" /> : null;

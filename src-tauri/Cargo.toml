@@ -39,7 +39,6 @@ tauri-plugin-process = "2"
 russh = "0.60"
 russh-sftp = "2.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "fs", "time"] }
-dirs = "5"
 async-trait = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
