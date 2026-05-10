@@ -173,42 +173,7 @@ export function FileExplorer({
               </div>
             </>
           ) : (
-            <>
-              <HugeiconsIcon
-                icon={Globe02Icon}
-                size={20}
-                strokeWidth={1.5}
-                className="text-destructive"
-              />
-              <div className="text-[11px] leading-snug text-destructive break-words max-w-[18rem]">
-                {ssh.error ?? "SSH connection failed"}
-              </div>
-              <div className="text-[10px] leading-snug text-muted-foreground max-w-[18rem]">
-                Your terminal SSH session is unaffected. The sidebar uses a
-                separate SFTP connection — only ssh-agent and unencrypted keys
-                are supported here for now.
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-6 text-[11px]"
-                  onClick={() =>
-                    void useSshStore.getState().beginConnect(ssh.tabId, ssh.target)
-                  }
-                >
-                  Retry
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 text-[11px]"
-                  onClick={() => useSshStore.getState().clear(ssh.tabId)}
-                >
-                  Dismiss
-                </Button>
-              </div>
-            </>
+            <SshErrorPanel ssh={ssh} />
           )}
         </div>
       </div>
@@ -543,6 +508,84 @@ export function FileExplorer({
         </ContextMenu>
       )}
     </div>
+  );
+}
+
+function SshErrorPanel({ ssh }: { ssh: SshTabSession }) {
+  const [password, setPassword] = useState("");
+  const submit = () => {
+    const pw = password;
+    setPassword("");
+    void useSshStore.getState().beginConnect(ssh.tabId, ssh.target, pw || undefined);
+  };
+  return (
+    <>
+      <HugeiconsIcon
+        icon={Globe02Icon}
+        size={20}
+        strokeWidth={1.5}
+        className="text-destructive"
+      />
+      <div className="text-[11px] leading-snug text-destructive break-words max-w-[18rem]">
+        {ssh.error ?? "SSH connection failed"}
+      </div>
+      <div className="text-[10px] leading-snug text-muted-foreground max-w-[18rem]">
+        Your terminal SSH session is unaffected. The sidebar uses a separate
+        SFTP connection. Enter the password for{" "}
+        <span className="font-mono text-foreground/80">{ssh.target}</span> to
+        unlock the file tree, or run <span className="font-mono">ssh-add</span>{" "}
+        in another terminal.
+      </div>
+      <form
+        className="flex w-full max-w-[18rem] flex-col gap-1.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <Input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          autoFocus
+          autoComplete="off"
+          spellCheck={false}
+          className="h-7 text-xs"
+        />
+        <div className="flex gap-2">
+          <Button
+            type="submit"
+            size="sm"
+            className="h-6 flex-1 text-[11px]"
+            disabled={!password}
+          >
+            Connect
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-6 text-[11px]"
+            onClick={() =>
+              void useSshStore.getState().beginConnect(ssh.tabId, ssh.target)
+            }
+            title="Retry without password (key/agent only)"
+          >
+            Retry
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 text-[11px]"
+            onClick={() => useSshStore.getState().clear(ssh.tabId)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      </form>
+    </>
   );
 }
 

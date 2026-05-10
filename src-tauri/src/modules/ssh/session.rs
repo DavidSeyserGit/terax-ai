@@ -120,9 +120,23 @@ pub fn parse_target(target: &str, default_user: &str) -> (String, String, u16) {
 pub async fn authenticate(
     handle: &mut Handle<SkipHostKey>,
     user: &str,
+    password: Option<&str>,
 ) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
     let mut tried_anything = false;
+
+    // When the caller already has a password (user typed it into the prompt),
+    // try it FIRST. Burning a wrong password attempt against the server is
+    // user-visible, so we don't want to chew through key/agent attempts and
+    // exhaust the auth budget before we get there.
+    if let Some(pw) = password {
+        tried_anything = true;
+        match handle.authenticate_password(user, pw).await {
+            Ok(AuthResult::Success) => return Ok(()),
+            Ok(_) => errors.push("password rejected".into()),
+            Err(e) => errors.push(format!("password attempt: {e}")),
+        }
+    }
 
     // ── 1. ssh-agent ────────────────────────────────────────────────────
     match try_agent(handle, user).await {
@@ -163,8 +177,8 @@ pub async fn authenticate(
 
     if !tried_anything && errors.iter().all(|e| e.starts_with("agent: ")) {
         return Err(
-            "no usable SSH credentials. Start ssh-agent and `ssh-add` your key, \
-             or place an unencrypted key under `~/.ssh/`."
+            "no usable SSH credentials. Enter a password, run `ssh-add` to \
+             unlock your key, or place an unencrypted key under `~/.ssh/`."
                 .into(),
         );
     }
@@ -234,7 +248,10 @@ async fn try_disk_key(
     Ok(matches!(result, AuthResult::Success))
 }
 
-pub async fn connect(target: &str) -> Result<(SshSession, u16), String> {
+pub async fn connect(
+    target: &str,
+    password: Option<&str>,
+) -> Result<(SshSession, u16), String> {
     let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
     let (user, host, port) = parse_target(target, &default_user);
 
@@ -243,7 +260,7 @@ pub async fn connect(target: &str) -> Result<(SshSession, u16), String> {
         .await
         .map_err(|e| format!("connect {host}:{port}: {e}"))?;
 
-    authenticate(&mut handle, &user).await?;
+    authenticate(&mut handle, &user, password).await?;
 
     // Resolve $HOME so the explorer can default the root path. We open one
     // extra exec channel rather than rely on canonicalize(".") because the

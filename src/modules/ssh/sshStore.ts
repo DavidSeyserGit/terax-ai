@@ -23,7 +23,7 @@ export type SshTabSession = {
 
 type State = {
   sessions: Record<number, SshTabSession>;
-  beginConnect: (tabId: number, target: string) => Promise<void>;
+  beginConnect: (tabId: number, target: string, password?: string) => Promise<void>;
   disconnect: (tabId: number) => Promise<void>;
   /** Manually clear a tab's SSH state (e.g. when the tab is being torn down). */
   clear: (tabId: number) => void;
@@ -32,7 +32,7 @@ type State = {
 
 export const useSshStore = create<State>((set, get) => ({
   sessions: {},
-  beginConnect: async (tabId, target) => {
+  beginConnect: async (tabId, target, password) => {
     const existing = get().sessions[tabId];
     if (existing && existing.status === "connecting") return;
     if (existing?.status === "connected" && existing.target === target) return;
@@ -51,7 +51,7 @@ export const useSshStore = create<State>((set, get) => ({
       },
     }));
     try {
-      const result = await sshBridge.connect(target);
+      const result = await sshBridge.connect(target, password);
       set((s) => {
         // The user may have already started another connect/disconnect by the
         // time the result lands — bail out if so.
