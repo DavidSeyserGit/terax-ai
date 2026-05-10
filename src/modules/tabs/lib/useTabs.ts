@@ -13,6 +13,12 @@ export type EditorTab = {
   title: string;
   path: string;
   dirty: boolean;
+  /** When set, the editor reads/writes via SFTP against this remote session
+   *  instead of the local filesystem. Cleared as soon as the session ends. */
+  sshSessionId?: number;
+  /** Display label like "user@host" — kept on the tab so we can render a hint
+   *  even after the underlying session is torn down. */
+  sshLabel?: string;
 };
 
 export type PreviewTab = {
@@ -81,32 +87,42 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     return id;
   }, []);
 
-  const openFileTab = useCallback((path: string) => {
-    let targetId: number | null = null;
-    setTabs((curr) => {
-      const existing = curr.find(
-        (t) => t.kind === "editor" && t.path === path,
-      );
-      if (existing) {
-        targetId = existing.id;
-        return curr;
-      }
-      const id = nextIdRef.current++;
-      targetId = id;
-      return [
-        ...curr,
-        {
-          id,
-          kind: "editor",
-          title: basename(path),
-          path,
-          dirty: false,
-        },
-      ];
-    });
-    if (targetId !== null) setActiveId(targetId);
-    return targetId as number | null;
-  }, []);
+  const openFileTab = useCallback(
+    (path: string, opts?: { sshSessionId?: number; sshLabel?: string }) => {
+      let targetId: number | null = null;
+      setTabs((curr) => {
+        // Match on both path and sshSessionId — a remote `~/foo` and a local
+        // `~/foo` are different documents and shouldn't collapse.
+        const existing = curr.find(
+          (t) =>
+            t.kind === "editor" &&
+            t.path === path &&
+            t.sshSessionId === opts?.sshSessionId,
+        );
+        if (existing) {
+          targetId = existing.id;
+          return curr;
+        }
+        const id = nextIdRef.current++;
+        targetId = id;
+        return [
+          ...curr,
+          {
+            id,
+            kind: "editor",
+            title: basename(path),
+            path,
+            dirty: false,
+            sshSessionId: opts?.sshSessionId,
+            sshLabel: opts?.sshLabel,
+          },
+        ];
+      });
+      if (targetId !== null) setActiveId(targetId);
+      return targetId as number | null;
+    },
+    [],
+  );
 
   const openAiDiffTab = useCallback(
     (input: {

@@ -31,6 +31,7 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { PreviewStack, type PreviewPaneHandle } from "@/modules/preview";
+import { useTabSshSession } from "@/modules/ssh";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
@@ -185,6 +186,11 @@ export default function App() {
     tabs,
     home,
   );
+
+  // The active terminal's SSH session (if any) drives the explorer. Switching
+  // tabs flips the explorer between local and remote roots.
+  const activeTerminalId = activeTab?.kind === "terminal" ? activeTab.id : null;
+  const activeSshSession = useTabSshSession(activeTerminalId);
 
   useEffect(() => {
     setActiveSearchAddon(searchAddons.current.get(activeId) ?? null);
@@ -398,8 +404,8 @@ export default function App() {
   );
 
   const handleOpenFile = useCallback(
-    (path: string) => {
-      openFileTab(path);
+    (path: string, opts?: { sshSessionId?: number; sshLabel?: string }) => {
+      openFileTab(path, opts);
     },
     [openFileTab],
   );
@@ -612,6 +618,7 @@ export default function App() {
                     onPathDeleted={handlePathDeleted}
                     onRevealInTerminal={cdInNewTab}
                     onAttachToAgent={handleAttachFileToAgent}
+                    ssh={activeSshSession}
                   />
                 </div>
               </ResizablePanel>

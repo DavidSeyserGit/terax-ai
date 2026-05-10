@@ -13,34 +13,40 @@ import {
   FileAddIcon,
   Folder01Icon,
   FolderAddIcon,
+  Globe02Icon,
+  Loading03Icon,
+  Logout03Icon,
   Refresh01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
+import { cn } from "@/lib/utils";
 import { motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { SshTabSession } from "@/modules/ssh";
+import { useSshStore } from "@/modules/ssh";
 import { FileTreeNode } from "./FileTreeNode";
 import { InlineInput } from "./InlineInput";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
+import { localFsAdapter, makeRemoteFsAdapter, type FsAdapter, type FsSearchHit } from "./lib/fsAdapter";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { useFileTree } from "./lib/useFileTree";
 
-type SearchHit = {
-  path: string;
-  rel: string;
-  name: string;
-  is_dir: boolean;
-};
+type SearchHit = FsSearchHit;
+
+type OpenFileOpts = { sshSessionId?: number; sshLabel?: string };
 
 type Props = {
   rootPath: string | null;
-  onOpenFile: (path: string) => void;
+  onOpenFile: (path: string, opts?: OpenFileOpts) => void;
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
   onRevealInTerminal?: (path: string) => void;
   onAttachToAgent?: (path: string) => void;
+  /** Active terminal's SSH session, if any. When connected, the explorer
+   *  switches to a remote SFTP backend rooted at the remote $HOME. */
+  ssh?: SshTabSession | null;
 };
 
 function basename(path: string): string {
@@ -55,8 +61,31 @@ export function FileExplorer({
   onPathDeleted,
   onRevealInTerminal,
   onAttachToAgent,
+  ssh,
 }: Props) {
-  const tree = useFileTree(rootPath, { onPathRenamed, onPathDeleted });
+  // Pick the FS backend to drive the tree. A connected SSH tab swaps in a
+  // SFTP-backed adapter and reroots the explorer at the remote $HOME.
+  const isRemote = ssh?.status === "connected" && ssh.sessionId !== undefined;
+  const fs: FsAdapter = useMemo(
+    () =>
+      isRemote && ssh?.sessionId !== undefined
+        ? makeRemoteFsAdapter(ssh.sessionId)
+        : localFsAdapter,
+    [isRemote, ssh?.sessionId],
+  );
+  const effectiveRoot = isRemote ? (ssh?.home ?? "/") : rootPath;
+  const tree = useFileTree(effectiveRoot, { onPathRenamed, onPathDeleted, fs });
+
+  // Wrap onOpenFile so callers in this tree always get the right SSH context.
+  // useMemo isn't worth the dep churn — closure identity doesn't matter here.
+  const openFileWithCtx = (path: string) => {
+    if (isRemote && ssh?.sessionId !== undefined) {
+      const label = ssh.user && ssh.host ? `${ssh.user}@${ssh.host}` : ssh.target;
+      onOpenFile(path, { sshSessionId: ssh.sessionId, sshLabel: label });
+    } else {
+      onOpenFile(path);
+    }
+  };
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -66,7 +95,7 @@ export function FileExplorer({
 
   type FlatItem = { path: string; isDir: boolean };
   const flat = useMemo<FlatItem[]>(() => {
-    if (!rootPath) return [];
+    if (!effectiveRoot) return [];
     const out: FlatItem[] = [];
     const walk = (parent: string) => {
       const node = tree.nodes[parent];
@@ -78,9 +107,9 @@ export function FileExplorer({
         if (isDir && tree.expanded.has(p)) walk(p);
       }
     };
-    walk(rootPath);
+    walk(effectiveRoot);
     return out;
-  }, [rootPath, tree.nodes, tree.expanded, tree.joinPath]);
+  }, [effectiveRoot, tree.nodes, tree.expanded, tree.joinPath]);
 
   useEffect(() => {
     if (selectedPath && !flat.some((f) => f.path === selectedPath)) {
@@ -89,7 +118,7 @@ export function FileExplorer({
   }, [flat, selectedPath]);
 
   useEffect(() => {
-    if (!rootPath) return;
+    if (!effectiveRoot) return;
     const q = query.trim();
     if (!q) {
       setResults([]);
@@ -98,30 +127,78 @@ export function FileExplorer({
     }
     setSearching(true);
     let alive = true;
+    // Remote search is much slower than local (one round-trip per directory),
+    // so we debounce more aggressively when SSH'd.
+    const debounce = isRemote ? 300 : 120;
     const handle = setTimeout(async () => {
       try {
-        const hits = await invoke<SearchHit[]>("fs_search", {
-          root: rootPath,
-          query: q,
-          limit: 200,
-        });
+        const hits = await fs.search(effectiveRoot, q, 200);
         if (alive) setResults(hits);
       } catch (e) {
         if (alive) {
-          console.error("fs_search failed:", e);
+          console.error("search failed:", e);
           setResults([]);
         }
       } finally {
         if (alive) setSearching(false);
       }
-    }, 120);
+    }, debounce);
     return () => {
       alive = false;
       clearTimeout(handle);
     };
-  }, [query, rootPath]);
+  }, [query, effectiveRoot, fs, isRemote]);
 
-  if (!rootPath) {
+  // Connecting / error states show a status banner instead of the empty-tree
+  // placeholder so the user can see what's happening with the SSH connection.
+  if (ssh && ssh.status !== "connected") {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
+          <SshChip ssh={ssh} />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+          {ssh.status === "connecting" || ssh.status === "disconnecting" ? (
+            <>
+              <HugeiconsIcon
+                icon={Loading03Icon}
+                size={20}
+                strokeWidth={1.5}
+                className="animate-spin text-muted-foreground"
+              />
+              <div className="text-xs text-muted-foreground">
+                {ssh.status === "connecting"
+                  ? `Connecting to ${ssh.target}…`
+                  : "Disconnecting…"}
+              </div>
+            </>
+          ) : (
+            <>
+              <HugeiconsIcon
+                icon={Globe02Icon}
+                size={20}
+                strokeWidth={1.5}
+                className="text-destructive"
+              />
+              <div className="text-xs text-destructive break-all">
+                {ssh.error ?? "SSH connection failed"}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-[11px]"
+                onClick={() => useSshStore.getState().clear(ssh.tabId)}
+              >
+                Dismiss
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (!effectiveRoot) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <HugeiconsIcon
@@ -137,9 +214,9 @@ export function FileExplorer({
     );
   }
 
-  const root = tree.nodes[rootPath];
+  const root = tree.nodes[effectiveRoot];
   const pendingAtRoot =
-    tree.pendingCreate?.parentPath === rootPath ? tree.pendingCreate : null;
+    tree.pendingCreate?.parentPath === effectiveRoot ? tree.pendingCreate : null;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (tree.renaming || tree.pendingCreate || query.trim()) return;
@@ -195,7 +272,7 @@ export function FileExplorer({
           tree.toggle(item.path);
         } else {
           const parent = item.path.slice(0, item.path.lastIndexOf("/"));
-          if (parent && parent !== rootPath) setSelectedPath(parent);
+          if (parent && parent !== effectiveRoot) setSelectedPath(parent);
         }
         break;
       }
@@ -205,7 +282,7 @@ export function FileExplorer({
         {
           const item = flat[currentIdx];
           if (item.isDir) tree.toggle(item.path);
-          else onOpenFile(item.path);
+          else openFileWithCtx(item.path);
         }
         break;
     }
@@ -218,26 +295,30 @@ export function FileExplorer({
       onKeyDown={handleKeyDown}
     >
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
-        <span
-          className="flex-1 flex truncate text-xs font-medium text-foreground/80"
-          title={rootPath}
-        >
-          <img
-            src={folderIconUrl(basename(rootPath), false)}
-            alt=""
-            height={15}
-            width={15}
-            className="mx-1.5"
-          />
-          {basename(rootPath)}
-        </span>
+        {ssh && ssh.status === "connected" ? (
+          <SshChip ssh={ssh} />
+        ) : (
+          <span
+            className="flex-1 flex truncate text-xs font-medium text-foreground/80"
+            title={effectiveRoot}
+          >
+            <img
+              src={folderIconUrl(basename(effectiveRoot), false)}
+              alt=""
+              height={15}
+              width={15}
+              className="mx-1.5"
+            />
+            {basename(effectiveRoot)}
+          </span>
+        )}
 
         <Button
           variant="ghost"
           size="icon"
           className="size-6 text-muted-foreground hover:text-foreground"
           onClick={() => setIsSearchOpen(!isSearchOpen)}
-          title="New file"
+          title="Search"
         >
           <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={2} />
         </Button>
@@ -246,7 +327,7 @@ export function FileExplorer({
           variant="ghost"
           size="icon"
           className="size-6 text-muted-foreground hover:text-foreground"
-          onClick={() => tree.beginCreate(rootPath, "file")}
+          onClick={() => tree.beginCreate(effectiveRoot, "file")}
           title="New file"
         >
           <HugeiconsIcon icon={FileAddIcon} size={13} strokeWidth={2} />
@@ -255,7 +336,7 @@ export function FileExplorer({
           variant="ghost"
           size="icon"
           className="size-6 text-muted-foreground hover:text-foreground"
-          onClick={() => tree.beginCreate(rootPath, "dir")}
+          onClick={() => tree.beginCreate(effectiveRoot, "dir")}
           title="New folder"
         >
           <HugeiconsIcon icon={FolderAddIcon} size={13} strokeWidth={2} />
@@ -264,7 +345,7 @@ export function FileExplorer({
           variant="ghost"
           size="icon"
           className="size-6 text-muted-foreground hover:text-foreground"
-          onClick={() => tree.refresh(rootPath)}
+          onClick={() => tree.refresh(effectiveRoot)}
           title="Refresh"
         >
           <HugeiconsIcon icon={Refresh01Icon} size={12} strokeWidth={2} />
@@ -321,7 +402,7 @@ export function FileExplorer({
                     key={hit.path}
                     type="button"
                     onClick={() => {
-                      if (!hit.is_dir) onOpenFile(hit.path);
+                      if (!hit.is_dir) openFileWithCtx(hit.path);
                     }}
                     className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs hover:bg-accent"
                     title={hit.path}
@@ -383,63 +464,108 @@ export function FileExplorer({
                     <FileTreeNode
                       key={entry.name}
                       entry={entry}
-                      parentPath={rootPath}
-                      rootPath={rootPath}
+                      parentPath={effectiveRoot}
+                      rootPath={effectiveRoot}
                       depth={0}
                       tree={tree}
-                      onOpenFile={onOpenFile}
-                      onRevealInTerminal={onRevealInTerminal}
-                      onAttachToAgent={onAttachToAgent}
+                      onOpenFile={openFileWithCtx}
+                      onRevealInTerminal={isRemote ? undefined : onRevealInTerminal}
+                      onAttachToAgent={isRemote ? undefined : onAttachToAgent}
                       selectedPath={selectedPath}
                       onSelectPath={setSelectedPath}
+                      isRemote={isRemote}
                     />
                   ))}
               </div>
             </ScrollArea>
           </ContextMenuTrigger>
           <ContextMenuContent className={COMPACT_CONTENT}>
-            {onRevealInTerminal && (
+            {onRevealInTerminal && !isRemote && (
               <ContextMenuItem
                 className={COMPACT_ITEM}
-                onSelect={() => onRevealInTerminal(rootPath)}
+                onSelect={() => onRevealInTerminal(effectiveRoot)}
               >
                 Open in Terminal
               </ContextMenuItem>
             )}
-            <ContextMenuItem
-              className={COMPACT_ITEM}
-              onSelect={() => void revealInFinder(rootPath)}
-            >
-              Reveal in Finder
-            </ContextMenuItem>
+            {!isRemote && (
+              <ContextMenuItem
+                className={COMPACT_ITEM}
+                onSelect={() => void revealInFinder(effectiveRoot)}
+              >
+                Reveal in Finder
+              </ContextMenuItem>
+            )}
             <ContextMenuSeparator />
             <ContextMenuItem
               className={COMPACT_ITEM}
-              onSelect={() => tree.beginCreate(rootPath, "file")}
+              onSelect={() => tree.beginCreate(effectiveRoot, "file")}
             >
               New File
             </ContextMenuItem>
             <ContextMenuItem
               className={COMPACT_ITEM}
-              onSelect={() => tree.beginCreate(rootPath, "dir")}
+              onSelect={() => tree.beginCreate(effectiveRoot, "dir")}
             >
               New Folder
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem
               className={COMPACT_ITEM}
-              onSelect={() => void copyToClipboard(rootPath)}
+              onSelect={() => void copyToClipboard(effectiveRoot)}
             >
               Copy Path
             </ContextMenuItem>
             <ContextMenuItem
               className={COMPACT_ITEM}
-              onSelect={() => tree.refresh(rootPath)}
+              onSelect={() => tree.refresh(effectiveRoot)}
             >
               Refresh
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
+      )}
+    </div>
+  );
+}
+
+function SshChip({ ssh }: { ssh: SshTabSession }) {
+  const label = ssh.user && ssh.host ? `${ssh.user}@${ssh.host}` : ssh.target;
+  const tone =
+    ssh.status === "connected"
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+      : ssh.status === "error"
+        ? "border-destructive/40 bg-destructive/10 text-destructive"
+        : "border-border/60 bg-card/60 text-muted-foreground";
+  const dotTone =
+    ssh.status === "connected"
+      ? "bg-emerald-400 shadow-[0_0_6px_currentColor]"
+      : ssh.status === "error"
+        ? "bg-destructive"
+        : "bg-muted-foreground/60 animate-pulse";
+
+  return (
+    <div className="flex flex-1 items-center gap-1.5 truncate" title={`SSH ${label}`}>
+      <div
+        className={cn(
+          "flex flex-1 min-w-0 items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+          tone,
+        )}
+      >
+        <HugeiconsIcon icon={Globe02Icon} size={11} strokeWidth={2} className="shrink-0" />
+        <span className="truncate font-mono">ssh: {label}</span>
+        <span className={cn("ml-auto size-1.5 shrink-0 rounded-full", dotTone)} />
+      </div>
+      {ssh.status === "connected" && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={() => void useSshStore.getState().disconnect(ssh.tabId)}
+          title="Disconnect SSH"
+        >
+          <HugeiconsIcon icon={Logout03Icon} size={11} strokeWidth={2} />
+        </Button>
       )}
     </div>
   );

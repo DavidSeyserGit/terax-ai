@@ -47,6 +47,8 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
   onClose?: () => void;
+  /** Forwarded to useDocument so SSH-origin editor tabs read/write via SFTP. */
+  sshSessionId?: number;
 };
 
 function formatBytes(n: number): string {
@@ -56,8 +58,12 @@ function formatBytes(n: number): string {
 }
 
 export const EditorPane = forwardRef<EditorPaneHandle, Props>(
-  function EditorPane({ path, onDirtyChange, onSaved, onClose }, ref) {
-    const { doc, onChange, save, reload } = useDocument({ path, onDirtyChange });
+  function EditorPane({ path, onDirtyChange, onSaved, onClose, sshSessionId }, ref) {
+    const { doc, onChange, save, reload } = useDocument({
+      path,
+      onDirtyChange,
+      sshSessionId,
+    });
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const cmRef = useRef<ReactCodeMirrorRef>(null);

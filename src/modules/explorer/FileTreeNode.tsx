@@ -32,6 +32,9 @@ type Props = {
   onAttachToAgent?: (path: string) => void;
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
+  /** Hides local-OS-only menu items (Reveal in Finder, Attach to Agent) when
+   *  the explorer is browsing a remote SFTP filesystem. */
+  isRemote?: boolean;
 };
 
 function FileTreeNodeImpl({
@@ -45,6 +48,7 @@ function FileTreeNodeImpl({
   onAttachToAgent,
   selectedPath,
   onSelectPath,
+  isRemote = false,
 }: Props) {
   const path = tree.joinPath(parentPath, entry.name);
   const isDir = entry.kind === "dir";
@@ -148,12 +152,14 @@ function FileTreeNodeImpl({
               Open in Terminal
             </ContextMenuItem>
           )}
-          <ContextMenuItem
-            className={COMPACT_ITEM}
-            onSelect={() => void revealInFinder(path)}
-          >
-            Reveal in Finder
-          </ContextMenuItem>
+          {!isRemote && (
+            <ContextMenuItem
+              className={COMPACT_ITEM}
+              onSelect={() => void revealInFinder(path)}
+            >
+              Reveal in Finder
+            </ContextMenuItem>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem
             className={COMPACT_ITEM}
@@ -180,13 +186,17 @@ function FileTreeNodeImpl({
           >
             Copy Relative Path
           </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            className={COMPACT_ITEM}
-            onSelect={() => onAttachToAgent?.(path)}
-          >
-            Attach to Agent
-          </ContextMenuItem>
+          {!isRemote && onAttachToAgent && (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                className={COMPACT_ITEM}
+                onSelect={() => onAttachToAgent(path)}
+              >
+                Attach to Agent
+              </ContextMenuItem>
+            </>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem
             className={COMPACT_ITEM}
@@ -262,6 +272,7 @@ function FileTreeNodeImpl({
             onAttachToAgent={onAttachToAgent}
             selectedPath={selectedPath}
             onSelectPath={onSelectPath}
+            isRemote={isRemote}
           />
         ))}
     </>

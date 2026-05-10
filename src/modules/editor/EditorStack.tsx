@@ -102,6 +102,7 @@ export function EditorStack({
                 path={t.path}
                 onDirtyChange={getDirtyCallback(t.id)}
                 onClose={getCloseCallback(t.id)}
+                sshSessionId={t.sshSessionId}
               />
             </div>
           </div>

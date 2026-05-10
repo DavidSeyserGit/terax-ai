@@ -22,6 +22,10 @@ type Options = {
   onExit?: (code: number) => void;
   onCwd?: (cwd: string) => void;
   onDetectedLocalUrl?: (url: string) => void;
+  /** Raw keystrokes the user typed into the terminal. Fires *before* the
+   *  data is forwarded to the PTY so consumers can sniff for shell-level
+   *  events (e.g. `ssh user@host`) without racing the remote echo. */
+  onUserInput?: (chunk: string) => void;
 };
 
 // Matches dev-server-style local URLs (vite, next dev, webpack, …). Anchors
@@ -37,18 +41,21 @@ export function useTerminalSession({
   onExit,
   onCwd,
   onDetectedLocalUrl,
+  onUserInput,
 }: Options) {
   const detectedRef = useRef<string | null>(null);
   const onDetectedRef = useRef(onDetectedLocalUrl);
   const onCwdRef = useRef(onCwd);
   const onExitRef = useRef(onExit);
   const onSearchReadyRef = useRef(onSearchReady);
+  const onUserInputRef = useRef(onUserInput);
   useEffect(() => {
     onDetectedRef.current = onDetectedLocalUrl;
     onCwdRef.current = onCwd;
     onExitRef.current = onExit;
     onSearchReadyRef.current = onSearchReady;
-  }, [onDetectedLocalUrl, onCwd, onExit, onSearchReady]);
+    onUserInputRef.current = onUserInput;
+  }, [onDetectedLocalUrl, onCwd, onExit, onSearchReady, onUserInput]);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
@@ -145,7 +152,10 @@ export function useTerminalSession({
       }
       ptyRef.current = pty;
 
-      term.onData((data) => pty.write(data));
+      term.onData((data) => {
+        onUserInputRef.current?.(data);
+        pty.write(data);
+      });
 
       // Intercept clipboard image pastes at the capture phase so xterm's
       // internal textarea never sees them. When the clipboard has an image

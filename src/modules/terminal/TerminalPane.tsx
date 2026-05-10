@@ -1,3 +1,4 @@
+import { TerminalLineSniffer, useSshStore } from "@/modules/ssh";
 import { useTheme } from "@/modules/theme";
 import type { SearchAddon } from "@xterm/addon-search";
 import {
@@ -40,6 +41,8 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
     const { resolvedTheme } = useTheme();
+    const snifferRef = useRef<TerminalLineSniffer | null>(null);
+    if (snifferRef.current === null) snifferRef.current = new TerminalLineSniffer();
 
     const session = useTerminalSession({
       container: containerRef,
@@ -49,7 +52,27 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
       onExit: (c) => onExit?.(tabId, c),
       onCwd: (c) => onCwd?.(tabId, c),
       onDetectedLocalUrl: (u) => onDetectedLocalUrl?.(tabId, u),
+      onUserInput: (chunk) => {
+        const detection = snifferRef.current?.feed(chunk);
+        if (!detection) return;
+        const store = useSshStore.getState();
+        if (detection.kind === "ssh") {
+          void store.beginConnect(tabId, detection.target);
+        } else if (detection.kind === "exit") {
+          // The remote shell is being torn down; release our parallel SFTP
+          // session too so the badge clears and the explorer falls back to
+          // the local FS.
+          void store.disconnect(tabId);
+        }
+      },
     });
+
+    useEffect(() => {
+      // Drop any lingering SSH session when the pane unmounts (tab closed).
+      return () => {
+        useSshStore.getState().clear(tabId);
+      };
+    }, [tabId]);
 
     useEffect(() => {
       // Defer one frame so CSS-variable token resolution sees the new class.
